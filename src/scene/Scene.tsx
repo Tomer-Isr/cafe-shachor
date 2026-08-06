@@ -1,6 +1,6 @@
 import { Suspense, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { ContactShadows, Environment, Lightformer, MeshReflectorMaterial, PerformanceMonitor } from '@react-three/drei'
+import { ContactShadows, Environment, MeshReflectorMaterial, PerformanceMonitor } from '@react-three/drei'
 import { Bloom, DepthOfField, EffectComposer, Noise, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { Cup } from './Cup'
@@ -63,7 +63,7 @@ function BackWall() {
   return (
     <mesh position={[0, 2.1, -4.2]} receiveShadow>
       <planeGeometry args={[22, 9]} />
-      <meshStandardMaterial map={color} roughnessMap={roughness} color="#171310" roughness={0.98} metalness={0} />
+      <meshStandardMaterial map={color} roughnessMap={roughness} color="#0d0a08" roughness={0.98} metalness={0} />
     </mesh>
   )
 }
@@ -140,7 +140,7 @@ export function Scene({ paused, settings, scrollRef }: Props) {
       dpr={dpr}
       frameloop={paused ? 'demand' : 'always'}
       shadows
-      gl={{ antialias: true, powerPreference: 'high-performance', alpha: false, toneMapping: THREE.AgXToneMapping, toneMappingExposure: 1.25 }}
+      gl={{ antialias: true, powerPreference: 'high-performance', alpha: false, toneMapping: THREE.AgXToneMapping, toneMappingExposure: 0.85 }}
       camera={{ fov: 30, position: [0, 1.16, 3.1], near: 0.1, far: 40 }}
       onPointerMove={(e) => {
         const r = (e.target as HTMLElement).getBoundingClientRect()
@@ -158,27 +158,30 @@ export function Scene({ paused, settings, scrollRef }: Props) {
       <fog attach="fog" args={['#0a0908', 3.8, 10]} />
 
       <Suspense fallback={null}>
-        {/* HDRI (CC0, Poly Haven) отвечает за отражения в кофе; лайтформеры дорисовывают сцену */}
-        <Environment resolution={256} environmentIntensity={0.55}>
-          {/* «одно высокое окно на восток» из легенды — главный источник и главный блик */}
-          <Lightformer form="rect" intensity={5.5} color="#ffd9ae" scale={[1.1, 3.4, 1]} position={[-3.2, 2.2, 1.2]} target={[0, 0.4, 0]} />
-          {/* холодный контровой сверху-сзади: отделяет чашку от фона */}
-          <Lightformer form="rect" intensity={2.1} color="#c2c8cc" scale={[3.4, 1.1, 1]} position={[2.2, 2.9, -3.1]} target={[0, 0.45, 0]} />
-          {/* узкая полоса над чашкой — её отражение и есть «блик окна» на кофе */}
-          <Lightformer form="rect" intensity={3.2} color="#fff1dd" scale={[0.28, 2.6, 1]} rotation-x={Math.PI / 2} position={[-0.35, 2.1, 0.6]} target={[0, 0.45, 0]} />
-          {/* тёплый отражатель снизу — подсвечивает низ ручки, чтобы не проваливалась в чёрное */}
-          <Lightformer form="circle" intensity={0.3} color="#a3846a" scale={[2, 2, 1]} position={[2.2, -0.4, 1.6]} target={[0, 0.2, 0]} />
-        </Environment>
+        {/*
+         * Настоящая панорама реального помещения (Poly Haven, CC0): каменный погреб со
+         * сводом и одной оконной щелью — та самая «одно высокое окно» из легенды.
+         * Раньше здесь стояли четыре Lightformer'а, и кофе-зеркало честно отражало
+         * четыре светящихся прямоугольника на чёрном. Отражать надо помещение.
+         */}
+        <Environment
+          files={`${import.meta.env.BASE_URL}hdri/vault_1k.hdr`}
+          environmentIntensity={0.12}
+          // разворот панорамы: оконная щель уводится влево-вперёд, чтобы её отражение
+          // легло на кофе и очертило кромку — то есть работала как свет в кадре
+          environmentRotation={[0, -1.15, 0]}
+        />
 
+        {/* Панорама светит, но теней не даёт — направленный источник оставлен только
+            ради тени и блика по кромке. Была 1.5: она пересвечивала бок в белое. */}
         <directionalLight
           position={[-1.9, 3.6, 1.1]}
-          intensity={1.5}
+          intensity={0.85}
           color="#ffe0bd"
           castShadow
           shadow-mapSize={[1024, 1024]}
           shadow-bias={-0.0008}
         />
-        <ambientLight intensity={0.06} />
 
         <BackWall />
         <Counter />
