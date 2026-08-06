@@ -44,11 +44,13 @@ interface Props {
   flowRef: React.RefObject<number>
   /** наружу: мировая точка схода струи с кромки */
   originRef: React.RefObject<THREE.Vector3>
+  /** наружу: мировая точка поверхности кофе — от неё поднимается пар */
+  steamAnchorRef: React.RefObject<THREE.Vector3>
 }
 
 const easeInOut = (x: number) => (x < 0.5 ? 2 * x * x : 1 - (-2 * x + 2) ** 2 / 2)
 
-export function Cup({ pointer, paused, scroll, tiltRef, flowRef, originRef }: Props) {
+export function Cup({ pointer, paused, scroll, tiltRef, flowRef, originRef, steamAnchorRef }: Props) {
   // Две вложенные группы намеренно: Euler применяет повороты по порядку, и наклон
   // после доворота на 90° кренил бы чашку «от зрителя», а не вбок. Внешняя группа
   // отвечает за наклон и место в кадре, внутренняя — за поворот вокруг своей оси.
@@ -133,6 +135,10 @@ export function Cup({ pointer, paused, scroll, tiltRef, flowRef, originRef }: Pr
         m.scale.setScalar(Math.max(0.02, radius))
         m.rotation.set(-Math.PI / 2, 0, 0) // мир, а не чашка: жидкость не наклоняется
         m.visible = radius > 0.06
+      }
+      // пар идёт от самой жидкости, а не от точки в воздухе над стойкой
+      if (steamAnchorRef.current) {
+        steamAnchorRef.current.set(shift, level - 0.02, 0)
       }
     }
 

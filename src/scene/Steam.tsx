@@ -81,7 +81,6 @@ const fragment = /* glsl */ `
     // 2. Сквозняк: медленный боковой снос, растущий с высотой — иначе столб стоит трубой
     float draft = sin(uTime * 0.23 + uSeed) * 0.55 + sin(uTime * 0.11 - uSeed * 1.7) * 0.3;
     p.x += draft * h * h * 0.18;
-    p.x -= uTilt * h * 0.22;               // наклонили — сносит в сторону носика
 
     // 3. Подъём с ускорением: верх уходит быстрее низа, поэтому клубы вытягиваются
     p.y -= uTime * (0.055 + h * 0.11);
@@ -116,9 +115,12 @@ interface Props {
   paused: boolean
   intensity: number
   tiltRef: React.RefObject<number>
+  /** мировая точка поверхности кофе: источник пара едет вместе с чашкой */
+  anchorRef: React.RefObject<THREE.Vector3>
 }
 
-export function Steam({ pointerWorld, paused, intensity, tiltRef }: Props) {
+export function Steam({ pointerWorld, paused, intensity, tiltRef, anchorRef }: Props) {
+  const group = useRef<THREE.Group>(null)
   const materials = useRef<THREE.ShaderMaterial[]>([])
 
   // слои с разной скоростью и плотностью: один слой всегда читается плоской картинкой
@@ -138,6 +140,11 @@ export function Steam({ pointerWorld, paused, intensity, tiltRef }: Props) {
   useFrame((_, delta) => {
     const p = pointerWorld.current ?? new THREE.Vector2()
     const tilt = tiltRef.current ?? 0
+    const anchor = anchorRef.current
+    if (group.current && anchor) {
+      // плоскости пара стоят над поверхностью кофе и едут вместе с ней
+      group.current.position.set(anchor.x, anchor.y + 0.58, anchor.z)
+    }
     materials.current.forEach((m, i) => {
       if (!m) return
       if (!paused) m.uniforms.uTime.value += delta * layers[i].speed
@@ -149,7 +156,7 @@ export function Steam({ pointerWorld, paused, intensity, tiltRef }: Props) {
   })
 
   return (
-    <group position={[0, 1.05, 0]}>
+    <group ref={group} position={[0, 1.05, 0]}>
       {layers.map((l, i) => (
         <mesh key={i} position={[0, 0, l.z]} scale={[l.scale, l.scale, 1]}>
           <planeGeometry args={[1.25, 1.25, 1, 1]} />

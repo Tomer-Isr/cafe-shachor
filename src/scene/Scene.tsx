@@ -127,6 +127,7 @@ export function Scene({ paused, settings, scrollRef }: Props) {
   const tilt = useRef(0)
   const flow = useRef(0)
   const pourOrigin = useRef(new THREE.Vector3())
+  const steamAnchor = useRef(new THREE.Vector3(0, 0.45, 0))
   const [dpr, setDpr] = useState(1.5)
 
   return (
@@ -185,9 +186,10 @@ export function Scene({ paused, settings, scrollRef }: Props) {
           tiltRef={tilt}
           flowRef={flow}
           originRef={pourOrigin}
+          steamAnchorRef={steamAnchor}
         />
         <Pour originRef={pourOrigin} flowRef={flow} paused={paused} />
-        <Steam pointerWorld={pointerWorld} paused={paused} intensity={settings.steam} tiltRef={tilt} />
+        <Steam pointerWorld={pointerWorld} paused={paused} intensity={settings.steam} tiltRef={tilt} anchorRef={steamAnchor} />
 
         <Rig pointer={pointer} scrollRef={scrollRef} />
         <PointerBridge pointer={pointer} pointerWorld={pointerWorld} />
