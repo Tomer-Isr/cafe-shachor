@@ -104,6 +104,58 @@ export function ceramicNormal(size = 512, strength = 1.6): THREE.Texture {
   })
 }
 
+/**
+ * Надпись по боку чашки. Кладётся на отдельную оболочку-копию внешней стенки,
+ * поэтому UV предсказуемы: u — окружность, v — высота стенки.
+ * Печать по керамике всегда чуть съедена обжигом — альфу выедаем шумом.
+ */
+export function cupDecal(width = 2048, height = 512): THREE.Texture {
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')!
+  ctx.clearRect(0, 0, width, height)
+
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = '#2a1c12'
+
+  // главная строка — то, чем место живёт
+  ctx.font = `600 ${Math.round(height * 0.115)}px "Frank Ruhl Libre", Georgia, serif`
+  ctx.letterSpacing = `${Math.round(height * 0.022)}px`
+  ctx.fillText('SHACHOR · ROASTED ON TUESDAYS', width * 0.5, height * 0.3)
+
+  // вторая строка — правила меню, те же, что на витрине
+  ctx.font = `400 ${Math.round(height * 0.058)}px "Heebo", system-ui, sans-serif`
+  ctx.letterSpacing = `${Math.round(height * 0.03)}px`
+  ctx.fillStyle = '#3a2718'
+  ctx.fillText('NO SYRUPS · NO SIZES · BRING YOUR OWN CUP', width * 0.5, height * 0.45)
+
+  // пасхалка: подпись мастерской мелким кеглем, как клеймо на донце
+  ctx.font = `400 ${Math.round(height * 0.042)}px "Heebo", system-ui, sans-serif`
+  ctx.letterSpacing = `${Math.round(height * 0.02)}px`
+  ctx.fillStyle = '#4a3524'
+  ctx.fillText('made by iukhvidov.dev', width * 0.5, height * 0.6)
+
+  // выедаем печать: обжиг съедает краску пятнами, ровная печать читается наклейкой
+  const wear = fbm(width, height, 4, 26, 33)
+  const img = ctx.getImageData(0, 0, width, height)
+  for (let i = 0, px = 0; i < img.data.length; i += 4, px++) {
+    if (img.data[i + 3] === 0) continue
+    const w = wear[px]
+    const eaten = w < 0.36 ? 0 : Math.min(1, (w - 0.36) / 0.22)
+    img.data[i + 3] = Math.round(img.data[i + 3] * (0.55 + 0.45 * eaten))
+  }
+  ctx.putImageData(img, 0, 0)
+
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.wrapS = THREE.RepeatWrapping
+  tex.wrapT = THREE.ClampToEdgeWrapping
+  tex.anisotropy = 8
+  return tex
+}
+
 /** Иерусалимский камень стойки: крупная пятнистость + прожилки */
 export function stoneMaps(size = 512): { color: THREE.Texture; roughness: THREE.Texture } {
   const blotch = fbm(size, size, 4, 3, 3)

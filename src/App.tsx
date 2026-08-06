@@ -24,9 +24,10 @@ export default function App() {
   const [paused, setPaused] = useState(prefersReducedMotion)
   const [font, setFont] = useState<FontPair>('serif')
   const [accent, setAccent] = useState<AccentKey>('copper')
-  const [settings, setSettings] = useState<SceneSettings>({ steam: 0.85, bloom: 0.62, grain: 0.035, focus: 0.028 })
+  const [settings, setSettings] = useState<SceneSettings>({ steam: 1.05, bloom: 0.62, grain: 0.035, focus: 0.028 })
   const [webgl] = useState(hasWebGL)
   const [heroVisible, setHeroVisible] = useState(true)
+  const [act, setAct] = useState<0 | 1 | 2>(0)
 
   const scrollRef = useRef(0)
   const menuRef = useRef<HTMLElement | null>(null)
@@ -39,9 +40,14 @@ export default function App() {
       cancelAnimationFrame(raf)
       raf = requestAnimationFrame(() => {
         const h = window.innerHeight
-        scrollRef.current = Math.min(1, window.scrollY / h)
+        // Первый экран — секция в три высоты с липким содержимым. Липкий блок
+        // отлипает, когда до конца секции остаётся один экран, поэтому вся
+        // хореография укладывается в 2h, а не в 3h — иначе третий акт не доигрывает.
+        const progress = Math.min(1, window.scrollY / (h * 2))
+        scrollRef.current = progress
         // сцена гасится, когда первый экран ушёл: не жжём кадры под контентом
-        setHeroVisible(window.scrollY < h * 1.15)
+        setHeroVisible(window.scrollY < h * 2.25)
+        setAct(progress < 0.34 ? 0 : progress < 0.66 ? 1 : 2)
       })
     }
     onScroll()
@@ -83,7 +89,7 @@ export default function App() {
       </div>
 
       <main className="relative">
-        <Hero t={t} onMenu={() => menuRef.current?.scrollIntoView({ behavior: paused ? 'auto' : 'smooth' })} />
+        <Hero t={t} act={act} onMenu={() => menuRef.current?.scrollIntoView({ behavior: paused ? 'auto' : 'smooth' })} />
 
         {/* всё, что ниже первого экрана, живёт на плотном фоне: текст читается, сцена спит */}
         <div className="relative bg-[#0a0908]">

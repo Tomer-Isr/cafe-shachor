@@ -3,9 +3,11 @@ import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 
 /**
- * Пар — не спрайты и не видео, а шейдерное поле fbm-шума на трёх плоскостях.
- * Курсор расталкивает пар (та же идея, что «след на снегу» в геймдеве: воздействие
- * считается прямо в шейдере от позиции указателя, без физики).
+ * Пар — шейдерное поле fbm на нескольких плоскостях.
+ * Реализм даёт не число октав, а физика движения: поток ускоряется с высотой,
+ * его сносит сквозняком, завихрения тянутся вслед за подъёмом (адвекция), а
+ * видимость появляется не у самой кромки, а выше — там, где горячий воздух
+ * успевает сконденсироваться.
  */
 
 const vertex = /* glsl */ `
@@ -27,9 +29,11 @@ const fragment = /* glsl */ `
   uniform float uTime;
   uniform float uIntensity;
   uniform float uSeed;
-  uniform vec2  uPointer;   // позиция указателя в мировых координатах (плоскость пара)
-  uniform float uPush;      // сила расталкивания
-  uniform vec3  uTint;
+  uniform vec2  uPointer;
+  uniform float uPush;
+  uniform float uTilt;      // 0 — чашка стоит, 1 — наклонена и льёт
+  uniform vec3  uWarm;
+  uniform vec3  uCool;
 
   float hash(vec2 p) {
     p = fract(p * vec2(233.34, 851.73));
@@ -41,20 +45,20 @@ const fragment = /* glsl */ `
     vec2 i = floor(p);
     vec2 f = fract(p);
     f = f * f * (3.0 - 2.0 * f);
-    float a = hash(i);
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    return mix(
+      mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+      mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x),
+      f.y
+    );
   }
 
-  // domain warping: без него шум читается как «телевизионный снег», а не как пар
-  float fbm(vec2 p) {
+  float fbm(vec2 p, int octaves) {
     float v = 0.0;
     float a = 0.5;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
+      if (i >= octaves) break;
       v += a * noise(p);
-      p = p * 2.02 + vec2(1.7, 9.2);
+      p = p * 2.03 + vec2(1.7, 9.2);
       a *= 0.5;
     }
     return v;
@@ -63,30 +67,47 @@ const fragment = /* glsl */ `
   void main() {
     vec2 uv = vUv;
 
-    // расталкивание указателем — по мировым координатам, чтобы работало на всех трёх плоскостях
+    // палец расталкивает поток: смещаем область выборки от точки указателя
     vec2 d = vWorld.xy - uPointer;
-    float dist2 = dot(d, d);
-    float influence = exp(-dist2 * 6.0) * uPush;
-    uv += normalize(d + 1e-5) * influence * 0.22;
+    float influence = exp(-dot(d, d) * 6.0) * uPush;
+    uv += normalize(d + 1e-5) * influence * 0.2;
 
-    // поднимающийся поток + расширение кверху
+    float h = uv.y;                        // высота внутри слоя, 0 — у кромки
+
+    // 1. Конус потока: у чашки узкий, кверху расходится и теряет форму
     vec2 p = uv;
-    p.x = (p.x - 0.5) / mix(0.75, 1.9, uv.y) + 0.5;
-    p.y -= uTime * 0.085;
+    p.x = (p.x - 0.5) / mix(0.42, 2.0, pow(h, 0.8)) + 0.5;
 
-    float warp = fbm(p * 3.0 + uSeed);
-    float density = fbm(p * 4.5 + vec2(warp * 1.6, uTime * 0.05) + uSeed);
+    // 2. Сквозняк: медленный боковой снос, растущий с высотой — иначе столб стоит трубой
+    float draft = sin(uTime * 0.23 + uSeed) * 0.55 + sin(uTime * 0.11 - uSeed * 1.7) * 0.3;
+    p.x += draft * h * h * 0.18;
+    p.x -= uTilt * h * 0.22;               // наклонили — сносит в сторону носика
 
-    // маски: гасим по краям и у самой кромки чашки, вверху растворяем
-    float edgeX = smoothstep(0.0, 0.36, uv.x) * smoothstep(1.0, 0.64, uv.x);
-    float rise  = smoothstep(0.0, 0.07, uv.y) * smoothstep(1.05, 0.3, uv.y);
+    // 3. Подъём с ускорением: верх уходит быстрее низа, поэтому клубы вытягиваются
+    p.y -= uTime * (0.055 + h * 0.11);
 
-    float a = density * edgeX * rise * uIntensity;
-    a = smoothstep(0.2, 0.86, a);
-    a *= 1.0 - influence * 0.55;   // там, где «раздвинули», пара меньше
+    // 4. Двойной domain warp — то, что отличает пар от «телевизионного снега»
+    float w1 = fbm(p * 2.6 + uSeed, 4);
+    float w2 = fbm(p * 5.1 + vec2(w1 * 2.2, -uTime * 0.09) + uSeed * 0.5, 4);
+    float density = fbm(p * 7.0 + vec2(w2 * 1.9, w1 * 1.2), 6);
 
-    if (a < 0.002) discard;
-    gl_FragColor = vec4(uTint, a);
+    // 5. Маски: у кромки пар ещё прозрачный, вверху растворяется, по бокам рвётся
+    float birth = smoothstep(0.02, 0.2, h);
+    float fade  = smoothstep(1.0, 0.34, h);
+    float sides = smoothstep(0.0, 0.3, uv.x) * smoothstep(1.0, 0.7, uv.x);
+
+    float a = density * birth * fade * sides * uIntensity;
+
+    // 6. Рваные края: степень делает границу клубов неровной, а не ватной
+    a = pow(smoothstep(0.2, 0.84, a), 1.45);
+    a *= 1.0 - influence * 0.6;
+    a *= mix(1.0, 0.45, uTilt);
+
+    if (a < 0.003) discard;
+
+    // у чашки пар подсвечен тёплым, выше уходит в холодный и теряет плотность
+    vec3 tint = mix(uWarm, uCool, smoothstep(0.1, 0.85, h));
+    gl_FragColor = vec4(tint, a);
   }
 `
 
@@ -94,37 +115,44 @@ interface Props {
   pointerWorld: React.RefObject<THREE.Vector2>
   paused: boolean
   intensity: number
+  tiltRef: React.RefObject<number>
 }
 
-export function Steam({ pointerWorld, paused, intensity }: Props) {
+export function Steam({ pointerWorld, paused, intensity, tiltRef }: Props) {
   const materials = useRef<THREE.ShaderMaterial[]>([])
 
+  // слои с разной скоростью и плотностью: один слой всегда читается плоской картинкой
   const layers = useMemo(
     () => [
-      { z: -0.14, scale: 1.15, seed: 0.0, opacity: 0.55, tint: new THREE.Color('#cdbba6') },
-      { z: 0.0, scale: 1.0, seed: 4.7, opacity: 0.85, tint: new THREE.Color('#efe4d4') },
-      { z: 0.13, scale: 0.82, seed: 9.3, opacity: 0.5, tint: new THREE.Color('#b9a894') },
+      { z: -0.16, scale: 1.2, seed: 0.0, opacity: 0.46, speed: 0.85 },
+      { z: -0.04, scale: 0.95, seed: 4.7, opacity: 0.8, speed: 1.0 },
+      { z: 0.09, scale: 0.8, seed: 9.3, opacity: 0.55, speed: 1.18 },
+      { z: 0.2, scale: 0.66, seed: 13.1, opacity: 0.32, speed: 1.4 },
     ],
     [],
   )
 
+  const warm = useMemo(() => new THREE.Color('#f0e0c9'), [])
+  const cool = useMemo(() => new THREE.Color('#9aa3ab'), [])
+
   useFrame((_, delta) => {
     const p = pointerWorld.current ?? new THREE.Vector2()
+    const tilt = tiltRef.current ?? 0
     materials.current.forEach((m, i) => {
       if (!m) return
-      if (!paused) m.uniforms.uTime.value += delta
+      if (!paused) m.uniforms.uTime.value += delta * layers[i].speed
       m.uniforms.uPointer.value.set(p.x, p.y)
       m.uniforms.uPush.value = THREE.MathUtils.damp(m.uniforms.uPush.value, paused ? 0 : 1, 3, delta)
-      // плотность живёт в твиках — читаем каждый кадр, иначе ползунок не двигал бы картинку
       m.uniforms.uIntensity.value = layers[i].opacity * intensity
+      m.uniforms.uTilt.value = tilt
     })
   })
 
   return (
-    <group position={[0, 0.98, 0]}>
+    <group position={[0, 1.05, 0]}>
       {layers.map((l, i) => (
         <mesh key={i} position={[0, 0, l.z]} scale={[l.scale, l.scale, 1]}>
-          <planeGeometry args={[1.15, 1.1, 1, 1]} />
+          <planeGeometry args={[1.25, 1.25, 1, 1]} />
           <shaderMaterial
             ref={(m) => {
               if (m) materials.current[i] = m
@@ -135,12 +163,14 @@ export function Steam({ pointerWorld, paused, intensity }: Props) {
             depthWrite={false}
             blending={THREE.AdditiveBlending}
             uniforms={{
-              uTime: { value: l.seed },
+              uTime: { value: l.seed * 3.1 },
               uIntensity: { value: l.opacity * intensity },
               uSeed: { value: l.seed },
               uPointer: { value: new THREE.Vector2(999, 999) },
               uPush: { value: 0 },
-              uTint: { value: l.tint },
+              uTilt: { value: 0 },
+              uWarm: { value: warm },
+              uCool: { value: cool },
             }}
           />
         </mesh>

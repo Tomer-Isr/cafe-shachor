@@ -23,6 +23,10 @@ export interface Copy {
   ctaMenu: string
   ctaBook: string
   cursorHint: string
+  actTwoTitle: string
+  actTwoText: string
+  actThreeTitle: string
+  actThreeText: string
   ticker: readonly string[]
   beanTitle: string
   beanRoasted: string
@@ -60,6 +64,12 @@ export const COPY: Record<Locale, Copy> = {
     ctaMenu: 'לתפריט',
     ctaBook: 'להזמנת שולחן',
     cursorHint: 'הזיזו את העכבר — האדים נסוגים',
+    actTwoTitle: 'מה שכתוב על הכוס',
+    actTwoText:
+      'קולים כאן, בכל יום שלישי, על רוסטר של 5 ק״ג. בלי סירופים, בלי גדלים, שני סוגי חלב. ' +
+      'מי שבא עם כוס משלו משלם 2 ₪ פחות.',
+    actThreeTitle: 'ואז מוזגים',
+    actThreeText: 'אספרסו בנפח הנכון, בלי לשאול על סוכר. הסוכר על הבר.',
     ticker: [
       'פולי השבוע: אתיופיה · גוג׳י · נטורל',
       'קולים כל יום שלישי',
@@ -107,6 +117,12 @@ export const COPY: Record<Locale, Copy> = {
     ctaMenu: 'Меню',
     ctaBook: 'Забронировать стол',
     cursorHint: 'Проведите курсором — пар расступается',
+    actTwoTitle: 'Что написано на чашке',
+    actTwoText:
+      'Жарим здесь, каждый вторник, на ростере 5 кг. Без сиропов, без размеров, два вида молока. ' +
+      'Пришёл со своей кружкой — минус 2 ₪.',
+    actThreeTitle: 'А потом наливаем',
+    actThreeText: 'Эспрессо в правильном объёме. Про сахар не спрашиваем — он на стойке.',
     ticker: [
       'Зерно недели: Эфиопия · Гуджи · натуральная',
       'Жарим по вторникам',

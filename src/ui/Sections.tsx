@@ -49,33 +49,73 @@ export function Reveal({ children, className = '', delay = 0 }: React.PropsWithC
   )
 }
 
-export function Hero({ t, onMenu }: { t: Copy; onMenu: () => void }) {
+/**
+ * Первый экран — три акта на трёх высотах прокрутки. Сцена под ними одна и живёт
+ * непрерывно: предмет стоит → поворачивается печатью → наклоняется и льёт.
+ * Текст меняется слоями поверх, поэтому сцена не перезапускается между актами.
+ */
+export function Hero({ t, onMenu, act }: { t: Copy; onMenu: () => void; act: 0 | 1 | 2 }) {
   return (
-    <section className="relative flex h-[100svh] flex-col justify-end px-6 pb-28 sm:px-10 sm:pb-20">
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-[#0a0908] via-[#0a0908]/70 to-transparent" />
-      <div className="relative">
-        <p className="t-caption mb-5">{t.heroFact}</p>
-        <h1 className="t-display">{t.brand}</h1>
-        <p className="mt-4 max-w-md text-xl text-[#c9c0b3] sm:text-2xl">{t.heroLine}</p>
+    <section className="relative h-[300svh]">
+      <div className="sticky top-0 flex h-[100svh] flex-col justify-end overflow-hidden px-6 pb-28 sm:px-10 sm:pb-20">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-[#0a0908] via-[#0a0908]/72 to-transparent" />
 
-        <div className="mt-9 flex flex-wrap items-center gap-3">
+        {/* акт 1 — представление */}
+        <Act visible={act === 0}>
+          <p className="t-caption mb-5">{t.heroFact}</p>
+          <h1 className="t-display">{t.brand}</h1>
+          <p className="mt-4 max-w-md text-xl text-[#c9c0b3] sm:text-2xl">{t.heroLine}</p>
+          <div className="mt-9 flex flex-wrap items-center gap-3">
+            <button
+              onClick={onMenu}
+              className="bg-[var(--accent)] px-7 py-3.5 text-[15px] font-medium text-[#100a06] transition hover:brightness-110 active:scale-[.98]"
+            >
+              {t.ctaMenu}
+            </button>
+            <a
+              href="#book"
+              className="border border-[rgba(236,230,220,.28)] px-7 py-3.5 text-[15px] text-[#ece6dc] transition hover:border-[rgba(236,230,220,.6)]"
+            >
+              {t.ctaBook}
+            </a>
+          </div>
+          <p className="t-caption mt-10 hidden md:block">{t.cursorHint}</p>
+        </Act>
+
+        {/* акт 2 — то, что написано на боку */}
+        <Act visible={act === 1}>
+          <p className="t-caption mb-5">02</p>
+          <h2 className="t-h2 max-w-lg">{t.actTwoTitle}</h2>
+          <p className="t-body mt-4 max-w-md text-[#c9c0b3]">{t.actTwoText}</p>
+        </Act>
+
+        {/* акт 3 — налив */}
+        <Act visible={act === 2}>
+          <p className="t-caption mb-5">03</p>
+          <h2 className="t-h2 max-w-lg">{t.actThreeTitle}</h2>
+          <p className="t-body mt-4 max-w-md text-[#c9c0b3]">{t.actThreeText}</p>
           <button
             onClick={onMenu}
-            className="bg-[var(--accent)] px-7 py-3.5 text-[15px] font-medium text-[#100a06] transition hover:brightness-110 active:scale-[.98]"
+            className="mt-8 bg-[var(--accent)] px-7 py-3.5 text-[15px] font-medium text-[#100a06] transition hover:brightness-110 active:scale-[.98]"
           >
             {t.ctaMenu}
           </button>
-          <a
-            href="#book"
-            className="border border-[rgba(236,230,220,.28)] px-7 py-3.5 text-[15px] text-[#ece6dc] transition hover:border-[rgba(236,230,220,.6)]"
-          >
-            {t.ctaBook}
-          </a>
-        </div>
-
-        <p className="t-caption mt-10 hidden md:block">{t.cursorHint}</p>
+        </Act>
       </div>
     </section>
+  )
+}
+
+function Act({ visible, children }: React.PropsWithChildren<{ visible: boolean }>) {
+  return (
+    <div
+      aria-hidden={!visible}
+      className={`relative transition-[opacity,transform] duration-700 ease-out ${
+        visible ? 'opacity-100 translate-y-0' : 'pointer-events-none absolute bottom-28 opacity-0 translate-y-4 sm:bottom-20'
+      }`}
+    >
+      {children}
+    </div>
   )
 }
 

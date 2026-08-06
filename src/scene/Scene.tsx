@@ -4,6 +4,7 @@ import { ContactShadows, Environment, Lightformer, MeshReflectorMaterial, Perfor
 import { Bloom, DepthOfField, EffectComposer, Noise, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { Cup } from './Cup'
+import { Pour } from './Pour'
 import { Steam } from './Steam'
 import { stoneMaps } from '../lib/procedural'
 
@@ -75,16 +76,24 @@ function Rig({ pointer, scrollRef }: { pointer: React.RefObject<THREE.Vector2>; 
     const aspect = state.viewport.aspect
 
     // вертикальный экран → камера дальше, иначе чашка выходит за края кадра
-    const dist = aspect < 0.75 ? 4.6 : aspect < 1.1 ? 3.9 : 3.1
-    // на телефоне текст занимает низ экрана, поэтому предмет уводим выше центра
+    const base = aspect < 0.75 ? 4.6 : aspect < 1.1 ? 3.9 : 3.1
     const height = aspect < 1.1 ? 1.32 : 1.16
 
-    const targetX = p.x * 0.22
-    const targetY = height + p.y * 0.14 + s * 0.4
+    const bPhase = THREE.MathUtils.clamp((s - 0.36) / 0.32, 0, 1)
+    const cPhase = THREE.MathUtils.clamp((s - 0.68) / 0.32, 0, 1)
+
+    // B: подходим ближе — печать на боку должна читаться, а не угадываться
+    // C: опускаемся и отступаем — в кадр входят струя и камень под ней
+    const dist = base - bPhase * 0.55 + cPhase * 0.95
+    const camY = height - bPhase * 0.24 + cPhase * 0.52
+    const lookY = (aspect < 1.1 ? 0.5 : 0.36) - bPhase * 0.06 + cPhase * 0.2
+
+    const targetX = p.x * 0.22 + cPhase * 0.16
+    const targetY = camY + p.y * 0.14
     state.camera.position.x = THREE.MathUtils.damp(state.camera.position.x, targetX, 1.6, delta)
     state.camera.position.y = THREE.MathUtils.damp(state.camera.position.y, targetY, 1.6, delta)
     state.camera.position.z = THREE.MathUtils.damp(state.camera.position.z, dist, 1.6, delta)
-    state.camera.lookAt(0, (aspect < 1.1 ? 0.5 : 0.36) - s * 0.18, 0)
+    state.camera.lookAt(0, lookY, 0)
   })
   return null
 }
@@ -115,6 +124,9 @@ function PointerBridge({
 export function Scene({ paused, settings, scrollRef }: Props) {
   const pointer = useRef(new THREE.Vector2(0, 0))
   const pointerWorld = useRef(new THREE.Vector2(999, 999))
+  const tilt = useRef(0)
+  const flow = useRef(0)
+  const pourOrigin = useRef(new THREE.Vector3())
   const [dpr, setDpr] = useState(1.5)
 
   return (
@@ -166,8 +178,16 @@ export function Scene({ paused, settings, scrollRef }: Props) {
         <Counter />
         {/* контакт с камнем: отражение его не даёт, а без контакта предмет читается парящим */}
         <ContactShadows position={[0, 0.001, 0]} opacity={0.62} scale={4.5} blur={2.6} far={1.2} resolution={512} color="#000000" />
-        <Cup pointer={pointer} paused={paused} scroll={scrollRef} />
-        <Steam pointerWorld={pointerWorld} paused={paused} intensity={settings.steam} />
+        <Cup
+          pointer={pointer}
+          paused={paused}
+          scroll={scrollRef}
+          tiltRef={tilt}
+          flowRef={flow}
+          originRef={pourOrigin}
+        />
+        <Pour originRef={pourOrigin} flowRef={flow} paused={paused} />
+        <Steam pointerWorld={pointerWorld} paused={paused} intensity={settings.steam} tiltRef={tilt} />
 
         <Rig pointer={pointer} scrollRef={scrollRef} />
         <PointerBridge pointer={pointer} pointerWorld={pointerWorld} />
