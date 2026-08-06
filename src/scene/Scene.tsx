@@ -84,16 +84,20 @@ function Rig({ pointer, scrollRef }: { pointer: React.RefObject<THREE.Vector2>; 
 
     // B: подходим ближе — печать на боку должна читаться, а не угадываться
     // C: опускаемся и отступаем — в кадр входят струя и камень под ней
-    const dist = base - bPhase * 0.55 + cPhase * 0.95
+    const dist = base + (aspect < 1.1 ? 0 : 0.55) - bPhase * 0.55 + cPhase * 0.95
     const camY = height - bPhase * 0.24 + cPhase * 0.52
     const lookY = (aspect < 1.1 ? 0.5 : 0.36) - bPhase * 0.06 + cPhase * 0.2
 
-    const targetX = p.x * 0.22 + cPhase * 0.16
+    // на широком экране предмет уводится в левую треть: правая половина — текст.
+    // Двигаем точку взгляда, а не объект, иначе поедут тени и отражение на камне.
+    const sideShift = aspect < 1.1 ? 0 : 0.58
+
+    const targetX = sideShift + p.x * 0.22 + cPhase * 0.16
     const targetY = camY + p.y * 0.14
     state.camera.position.x = THREE.MathUtils.damp(state.camera.position.x, targetX, 1.6, delta)
     state.camera.position.y = THREE.MathUtils.damp(state.camera.position.y, targetY, 1.6, delta)
     state.camera.position.z = THREE.MathUtils.damp(state.camera.position.z, dist, 1.6, delta)
-    state.camera.lookAt(0, lookY, 0)
+    state.camera.lookAt(sideShift * 1.55, lookY, 0)
   })
   return null
 }
@@ -122,6 +126,7 @@ function PointerBridge({
 }
 
 export function Scene({ paused, settings, scrollRef }: Props) {
+  const isNarrow = typeof window !== 'undefined' && window.innerWidth < 900
   const pointer = useRef(new THREE.Vector2(0, 0))
   const pointerWorld = useRef(new THREE.Vector2(999, 999))
   const tilt = useRef(0)
@@ -188,7 +193,7 @@ export function Scene({ paused, settings, scrollRef }: Props) {
           originRef={pourOrigin}
           steamAnchorRef={steamAnchor}
         />
-        <Pour originRef={pourOrigin} flowRef={flow} paused={paused} />
+        <Pour originRef={pourOrigin} flowRef={flow} paused={paused} splashCount={isNarrow ? 60 : 150} />
         <Steam pointerWorld={pointerWorld} paused={paused} intensity={settings.steam} tiltRef={tilt} anchorRef={steamAnchor} />
 
         <Rig pointer={pointer} scrollRef={scrollRef} />

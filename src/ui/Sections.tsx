@@ -57,8 +57,11 @@ export function Reveal({ children, className = '', delay = 0 }: React.PropsWithC
 export function Hero({ t, onMenu, act }: { t: Copy; onMenu: () => void; act: 0 | 1 | 2 }) {
   return (
     <section className="relative h-[300svh]">
-      <div className="sticky top-0 flex h-[100svh] flex-col justify-end overflow-hidden px-6 pb-28 sm:px-10 sm:pb-20">
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-[#0a0908] via-[#0a0908]/72 to-transparent" />
+      <div className="sticky top-0 flex h-[100svh] flex-col justify-end overflow-hidden px-6 pb-28 sm:px-10 sm:pb-20 md:justify-center md:pb-0 md:pl-[50%] md:pr-12 lg:pr-20">
+        {/* на мобиле текст лежит внизу поверх сцены — гасим её градиентом;
+            на десктопе он в правой половине, и сцену подпирает боковая вуаль */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-[#0a0908] via-[#0a0908]/72 to-transparent md:hidden" />
+        <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[62%] md:block" style={{ background: 'linear-gradient(to left, #0a0908 34%, rgba(10,9,8,.82) 62%, transparent 100%)' }} />
 
         {/* акт 1 — представление */}
         <Act visible={act === 0}>
