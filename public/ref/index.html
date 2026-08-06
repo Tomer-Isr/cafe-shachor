@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Shachor — выбор эталонного кадра</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #0a0908;
+    color: #e8e2d9;
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: clamp(24px, 5vw, 34px); font-weight: 500; letter-spacing: -0.01em; margin: 0 0 10px; }
+  .lede { color: #9a9083; margin: 0 0 40px; font-size: 15px; }
+  .lede b { color: #d8cfc2; font-weight: 500; }
+
+  figure { margin: 0 0 44px; }
+  figure img {
+    width: 100%; height: auto; display: block;
+    border-radius: 6px; background: #141110;
+  }
+  .tag {
+    display: inline-block; font-size: 12px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: #6f6659; margin-bottom: 10px;
+  }
+  .tag.pick { color: #d97742; }
+  h2 { font-size: 19px; font-weight: 600; margin: 14px 0 6px; }
+  figcaption { color: #9a9083; font-size: 15px; }
+  figcaption .note { color: #c9bfae; }
+
+  .now { border-top: 1px solid #241f1b; margin-top: 8px; padding-top: 36px; }
+  .now figure img { opacity: 0.95; }
+
+  .ask {
+    border: 1px solid #2b2521; border-radius: 8px;
+    padding: 20px 22px; margin-top: 40px; background: #100e0c;
+  }
+  .ask h2 { margin-top: 0; }
+  .ask ol { margin: 0; padding-inline-start: 20px; color: #b8ae9f; }
+  .ask li { margin-bottom: 8px; }
+  .ask li b { color: #e8e2d9; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Куда целимся</h1>
+  <p class="lede">
+    Четыре варианта эталонного кадра — это <b>не картинки для сайта</b>, а мишень для 3D-сцены.
+    Выбираешь один, дальше каждый технический шаг сверяем с ним: похоже стало или нет.
+    Внизу — что у нас в рендере прямо сейчас, для честного сравнения.
+  </p>
+
+  <figure>
+    <span class="tag">Вариант A</span>
+    <img src="ref-a-vault.webp" alt="Тёмная чашка в луче света, каменный свод в расфокусе">
+    <h2>Свод и луч</h2>
+    <figcaption>
+      Чашка на камне, за ней — свод старого Яффо в расфокусе, один луч из окна очерчивает кромку.
+      <span class="note">Даёт помещение: видно, что предмет где-то стоит, а не висит в пустоте.</span>
+      Самый «атмосферный», но и самый сложный: фон придётся строить по-настоящему.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <span class="tag">Вариант B</span>
+    <img src="ref-b-mirror.webp" alt="Макро: поверхность кофе отражает окно">
+    <h2>Чёрное зеркало</h2>
+    <figcaption>
+      Макро сверху: кофе ведёт себя как чёрное стекло и отражает окно, по стенке — кольцо кремы.
+      <span class="note">Ровно тот эффект, который мы уже пытались получить и не добрали.</span>
+      Технически честнее всего: почти весь результат делает окружение, фон почти не нужен.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <span class="tag">Вариант C</span>
+    <img src="ref-c-pour.webp" alt="Струя кофе с каплями в контровом свете">
+    <h2>Налив</h2>
+    <figcaption>
+      Струя в контровом свете, отдельные капли, лужа на камне.
+      <span class="note">Это наш третий акт — он уже есть в сцене, здесь видно, как он должен выглядеть.</span>
+      Самый эффектный в движении, но статичный кадр обещает больше, чем покажет реалтайм.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <span class="tag">Вариант D</span>
+    <img src="ref-d-counter.webp" alt="Чашка слева на длинной стойке, справа темнота под текст">
+    <h2>Стойка</h2>
+    <figcaption>
+      Предмет в левой трети, правые две трети уходят в темноту.
+      <span class="note">Это буквально наша нынешняя компоновка: справа ложится текст и кнопки.</span>
+      Самый «рабочий» для сайта, самый скромный как аттракцион.
+    </figcaption>
+  </figure>
+
+  <div class="now">
+    <figure>
+      <span class="tag">Сейчас в браузере</span>
+      <img src="current.webp" alt="Текущий рендер: светлая чашка в чёрной пустоте">
+      <h2>Что мы имеем сегодня</h2>
+      <figcaption>
+        Тот же ракурс, тот же сюжет. Разница не в мастерстве, а в начинке:
+        <span class="note">керамика без следов жизни, кофе отражает пустоту, помещения за чашкой нет вовсе,
+        пар выглядит дымом от костра.</span>
+      </figcaption>
+    </figure>
+  </div>
+
+  <div class="ask">
+    <h2>Что от тебя нужно</h2>
+    <ol>
+      <li><b>Назови букву</b> — A, B, C или D. Можно «A, но кофе как в B».</li>
+      <li>Если ни один не тот — скажи, чего не хватает, сгенерю следующий заход.</li>
+      <li>После выбора идём по одному шагу, каждый показываю по такой же ссылке.</li>
+    </ol>
+  </div>
+
+</div>
+</body>
+</html>
