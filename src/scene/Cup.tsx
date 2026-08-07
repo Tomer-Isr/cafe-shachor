@@ -159,13 +159,14 @@ export function Cup({ pointer, paused, scroll, tiltRef, flowRef, originRef, stea
     <>
       <group ref={group} position={[0, -0.02, 0]}>
         <group ref={spinner}>
-        <pointLight ref={revealLight} position={[0.6, 0.6, 1.1]} intensity={3.4} distance={4} color="#ffd9b0" />
+        {/* мягкий подсвет за курсором; был 3.4 и выжигал бок в белое пятно */}
+        <pointLight ref={revealLight} position={[0.6, 0.6, 1.1]} intensity={0.18} distance={2.2} color="#ffd9b0" />
 
         {/* корпус: не белый — тёплый серо-песочный. Белая керамика в тёмной сцене
             выбивается в пересвет и читается пластиком. */}
         <mesh geometry={geometry} castShadow receiveShadow>
           <meshPhysicalMaterial
-            color="#a99e8d"
+            color="#332c26"
             roughnessMap={roughnessMap}
             normalMap={normalMap}
             normalScale={new THREE.Vector2(0.34, 0.34)}
@@ -173,7 +174,7 @@ export function Cup({ pointer, paused, scroll, tiltRef, flowRef, originRef, stea
             metalness={0}
             clearcoat={0.08}
             clearcoatRoughness={0.7}
-            envMapIntensity={0.32}
+            envMapIntensity={1}
             side={THREE.DoubleSide}
           />
         </mesh>
@@ -196,14 +197,14 @@ export function Cup({ pointer, paused, scroll, tiltRef, flowRef, originRef, stea
         <mesh position={[0.435, 0.29, 0]} rotation={[Math.PI / 2, 0, Math.PI / 2]} scale={[1, 1, 0.78]} castShadow>
           <torusGeometry args={[0.145, 0.032, 20, 72, Math.PI * 1.15]} />
           <meshPhysicalMaterial
-            color="#a99e8d"
+            color="#332c26"
             roughnessMap={roughnessMap}
             normalMap={normalMap}
             normalScale={new THREE.Vector2(0.3, 0.3)}
             roughness={0.74}
             metalness={0}
             clearcoat={0.06}
-            envMapIntensity={0.32}
+            envMapIntensity={1}
           />
         </mesh>
         </group>
@@ -217,7 +218,9 @@ export function Cup({ pointer, paused, scroll, tiltRef, flowRef, originRef, stea
             color="#080503"
             roughness={0.045}
             metalness={0.35}
-            envMapIntensity={3.2}
+            // 3.2 было костылём: с четырьмя лайтформерами отражать было нечего,
+            // и блик приходилось выкручивать. С настоящей панорамой хватает единицы.
+            envMapIntensity={1.4}
             clearcoat={1}
             clearcoatRoughness={0.03}
           />
