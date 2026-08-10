@@ -23,6 +23,8 @@ interface Props {
   paused: boolean
   /** брызги дорогие на слабых устройствах — на мобиле их меньше */
   splashCount?: number
+  /** мировая Y поверхности, в которую бьёт струя: кофе в чашке, а не камень */
+  landingRef?: React.RefObject<number>
 }
 
 const FALL = 1.32
@@ -44,11 +46,12 @@ const streamFragment = /* glsl */ `
     // распад: чем ниже, тем рванее край — режем альфу продольной волной
     float ripple = sin(vUv.x * 18.0 + uTime * 9.0) * 0.5 + 0.5;
     float breakup = smoothstep(0.0, 0.55, h) + ripple * 0.28 * (1.0 - h);
-    float a = clamp(breakup, 0.0, 1.0) * uOpacity;
+    float a = clamp(breakup, 0.0, 1.0) * uOpacity * 0.88;
 
     // блик по краю: жидкость видно не цветом, а тем, как она ловит свет
     float rim = pow(1.0 - abs(dot(normalize(vNormalV), vec3(0.0, 0.0, 1.0))), 1.6);
-    vec3 color = uColor + rim * vec3(0.55, 0.38, 0.24);
+    // на просвет струя рыжеет — но только на кромке, не всей толщиной
+    vec3 color = uColor + rim * vec3(0.5, 0.23, 0.08);
 
     if (a < 0.02) discard;
     gl_FragColor = vec4(color, a);
@@ -65,7 +68,7 @@ const streamVertex = /* glsl */ `
   }
 `
 
-export function Pour({ originRef, flowRef, paused, splashCount = 140 }: Props) {
+export function Pour({ originRef, flowRef, paused, splashCount = 140, landingRef }: Props) {
   const stream = useRef<THREE.Mesh>(null)
   const streamMat = useRef<THREE.ShaderMaterial>(null)
   const drops = useRef<THREE.InstancedMesh>(null)
@@ -77,7 +80,7 @@ export function Pour({ originRef, flowRef, paused, splashCount = 140 }: Props) {
   const time = useRef(0)
 
   const geo = useMemo(() => {
-    const g = new THREE.CylinderGeometry(0.05, 0.021, FALL, 16, 44, true)
+    const g = new THREE.CylinderGeometry(0.034, 0.013, FALL, 16, 44, true)
     g.translate(0, -FALL / 2, 0)
     return g
   }, [])
@@ -110,7 +113,8 @@ export function Pour({ originRef, flowRef, paused, splashCount = 140 }: Props) {
     const origin = originRef.current
     if (!origin) return
 
-    const height = Math.max(0.05, origin.y - 0.004)
+    const land = landingRef?.current ?? 0.004
+    const height = Math.max(0.05, origin.y - land)
 
     // ── струя ────────────────────────────────────────────────────────────
     if (stream.current && streamMat.current) {
@@ -159,10 +163,10 @@ export function Pour({ originRef, flowRef, paused, splashCount = 140 }: Props) {
         const x = origin.x + s.dirX * age
         const z = origin.z + s.dirZ * age
         // парабола: подлетели и упали обратно на камень
-        const y = 0.006 + s.up * age - 4.9 * age * age * 0.5
-        const alive = y > 0.004
+        const y = land + 0.002 + s.up * age - 4.9 * age * age * 0.5
+        const alive = y > land
         const fade = 1 - age / s.life
-        dummy.position.set(x, Math.max(0.004, y), z)
+        dummy.position.set(x, Math.max(land, y), z)
         dummy.scale.setScalar(alive ? s.size * fade * Math.min(1, flow * 1.4) : 0.0001)
         dummy.updateMatrix()
         splash.current.setMatrixAt(i, dummy.matrix)
@@ -172,7 +176,7 @@ export function Pour({ originRef, flowRef, paused, splashCount = 140 }: Props) {
 
     // ── лужа: растёт по объёму вылитого ──────────────────────────────────
     if (puddle.current && puddleMat.current) {
-      const target = flow > 0.05 ? 0.2 + flow * 0.26 : 0
+      const target = landingRef ? 0 : flow > 0.05 ? 0.2 + flow * 0.26 : 0
       const s = THREE.MathUtils.damp(puddle.current.scale.x, target, 1.4, delta)
       puddle.current.scale.setScalar(Math.max(0.0001, s))
       puddle.current.visible = s > 0.01
@@ -183,7 +187,7 @@ export function Pour({ originRef, flowRef, paused, splashCount = 140 }: Props) {
     // ── круги по луже от падающей струи ──────────────────────────────────
     if (ripples.current && rippleMat.current) {
       ripples.current.visible = flow > 0.15
-      ripples.current.position.set(origin.x, 0.0075, origin.z)
+      ripples.current.position.set(origin.x, land + 0.0035, origin.z)
       const s = 0.2 + flow * 0.26
       ripples.current.scale.setScalar(s)
       rippleMat.current.uniforms.uTime.value = t
@@ -201,7 +205,7 @@ export function Pour({ originRef, flowRef, paused, splashCount = 140 }: Props) {
           transparent
           depthWrite={false}
           uniforms={{
-            uColor: { value: new THREE.Color('#3d1d0c') },
+            uColor: { value: new THREE.Color('#1d0f07') },
             uOpacity: { value: 0 },
             uTime: { value: 0 },
           }}

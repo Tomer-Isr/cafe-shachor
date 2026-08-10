@@ -31,7 +31,7 @@ const fragment = /* glsl */ `
   uniform float uSeed;
   uniform vec2  uPointer;
   uniform float uPush;
-  uniform float uTilt;      // 0 — чашка стоит, 1 — наклонена и льёт
+  uniform float uGate;      // 0 — чашка пуста и пара нет, 1 — полна и горяча
   uniform vec3  uWarm;
   uniform vec3  uCool;
 
@@ -74,9 +74,11 @@ const fragment = /* glsl */ `
 
     float h = uv.y;                        // высота внутри слоя, 0 — у кромки
 
-    // 1. Конус потока: у чашки узкий, кверху расходится и теряет форму
+    // 1. Конус потока: у чашки узкий, кверху расходится и теряет форму.
+    //    Раньше верх раздувался в 2 раза — получалось облако во весь кадр;
+    //    у настоящего пара над эспрессо конус куда скромнее.
     vec2 p = uv;
-    p.x = (p.x - 0.5) / mix(0.42, 2.0, pow(h, 0.8)) + 0.5;
+    p.x = (p.x - 0.5) / mix(0.3, 1.05, pow(h, 0.7)) + 0.5;
 
     // 2. Сквозняк: медленный боковой снос, растущий с высотой — иначе столб стоит трубой
     float draft = sin(uTime * 0.23 + uSeed) * 0.55 + sin(uTime * 0.11 - uSeed * 1.7) * 0.3;
@@ -85,22 +87,28 @@ const fragment = /* glsl */ `
     // 3. Подъём с ускорением: верх уходит быстрее низа, поэтому клубы вытягиваются
     p.y -= uTime * (0.055 + h * 0.11);
 
-    // 4. Двойной domain warp — то, что отличает пар от «телевизионного снега»
-    float w1 = fbm(p * 2.6 + uSeed, 4);
-    float w2 = fbm(p * 5.1 + vec2(w1 * 2.2, -uTime * 0.09) + uSeed * 0.5, 4);
-    float density = fbm(p * 7.0 + vec2(w2 * 1.9, w1 * 1.2), 6);
+    // 4. Двойной domain warp — то, что отличает пар от «телевизионного снега».
+    //    Поле сжато по горизонтали и растянуто по вертикали: пар идёт нитями,
+    //    вытянутыми потоком, а не круглыми клубами дыма.
+    vec2 q = vec2(p.x * 2.2, p.y * 0.85);
+    float w1 = fbm(q * 3.4 + uSeed, 4);
+    float w2 = fbm(q * 6.2 + vec2(w1 * 1.8, -uTime * 0.09) + uSeed * 0.5, 4);
+    float density = fbm(q * 9.5 + vec2(w2 * 1.6, w1 * 1.0), 5);
 
-    // 5. Маски: у кромки пар ещё прозрачный, вверху растворяется, по бокам рвётся
-    float birth = smoothstep(0.02, 0.2, h);
-    float fade  = smoothstep(1.0, 0.34, h);
-    float sides = smoothstep(0.0, 0.3, uv.x) * smoothstep(1.0, 0.7, uv.x);
+    // 5. Маски: у кромки пар ещё прозрачный, вверху растворяется, по бокам рвётся.
+    //    Верх гасится вдвое раньше прежнего — струйка живёт две-три высоты чашки,
+    //    а не до края экрана.
+    float birth = smoothstep(0.0, 0.13, h);
+    float fade  = smoothstep(0.72, 0.16, h);
+    float sides = smoothstep(0.0, 0.34, uv.x) * smoothstep(1.0, 0.66, uv.x);
 
     float a = density * birth * fade * sides * uIntensity;
 
-    // 6. Рваные края: степень делает границу клубов неровной, а не ватной
-    a = pow(smoothstep(0.2, 0.84, a), 1.45);
+    // 6. Порог выше и степень круче: остаются только плотные жилы потока,
+    //    вся ватная масса между ними уходит в ноль.
+    a = pow(smoothstep(0.42, 0.92, a), 2.1);
     a *= 1.0 - influence * 0.6;
-    a *= mix(1.0, 0.45, uTilt);
+    a *= uGate;
 
     if (a < 0.003) discard;
 
@@ -114,36 +122,39 @@ interface Props {
   pointerWorld: React.RefObject<THREE.Vector2>
   paused: boolean
   intensity: number
-  tiltRef: React.RefObject<number>
+  /** насколько чашка полна: от пустой посуды пар не идёт */
+  fillRef: React.RefObject<number>
   /** мировая точка поверхности кофе: источник пара едет вместе с чашкой */
   anchorRef: React.RefObject<THREE.Vector3>
 }
 
-export function Steam({ pointerWorld, paused, intensity, tiltRef, anchorRef }: Props) {
+export function Steam({ pointerWorld, paused, intensity, fillRef, anchorRef }: Props) {
   const group = useRef<THREE.Group>(null)
   const materials = useRef<THREE.ShaderMaterial[]>([])
 
-  // слои с разной скоростью и плотностью: один слой всегда читается плоской картинкой
+  // Слои с разной скоростью: один слой всегда читается плоской картинкой.
+  // Плотность срезана втрое против прежней — пар над чашкой почти не виден,
+  // и именно этим отличается от дыма.
   const layers = useMemo(
     () => [
-      { z: -0.16, scale: 1.2, seed: 0.0, opacity: 0.46, speed: 0.85 },
-      { z: -0.04, scale: 0.95, seed: 4.7, opacity: 0.8, speed: 1.0 },
-      { z: 0.09, scale: 0.8, seed: 9.3, opacity: 0.55, speed: 1.18 },
-      { z: 0.2, scale: 0.66, seed: 13.1, opacity: 0.32, speed: 1.4 },
+      { z: -0.1, scale: 1.0, seed: 0.0, opacity: 0.16, speed: 0.85 },
+      { z: 0.0, scale: 0.82, seed: 4.7, opacity: 0.26, speed: 1.0 },
+      { z: 0.1, scale: 0.62, seed: 9.3, opacity: 0.15, speed: 1.22 },
     ],
     [],
   )
 
-  const warm = useMemo(() => new THREE.Color('#f0e0c9'), [])
-  const cool = useMemo(() => new THREE.Color('#9aa3ab'), [])
+  // Пар не белый: он подкрашен тем, что его освещает. Белый выдаёт «дым из аэрозоли».
+  const warm = useMemo(() => new THREE.Color('#cdbba4'), [])
+  const cool = useMemo(() => new THREE.Color('#6f7780'), [])
 
   useFrame((_, delta) => {
     const p = pointerWorld.current ?? new THREE.Vector2()
-    const tilt = tiltRef.current ?? 0
+    const fill = fillRef.current ?? 0
     const anchor = anchorRef.current
     if (group.current && anchor) {
       // плоскости пара стоят над поверхностью кофе и едут вместе с ней
-      group.current.position.set(anchor.x, anchor.y + 0.58, anchor.z)
+      group.current.position.set(anchor.x, anchor.y + 0.44, anchor.z)
     }
     materials.current.forEach((m, i) => {
       if (!m) return
@@ -151,7 +162,7 @@ export function Steam({ pointerWorld, paused, intensity, tiltRef, anchorRef }: P
       m.uniforms.uPointer.value.set(p.x, p.y)
       m.uniforms.uPush.value = THREE.MathUtils.damp(m.uniforms.uPush.value, paused ? 0 : 1, 3, delta)
       m.uniforms.uIntensity.value = layers[i].opacity * intensity
-      m.uniforms.uTilt.value = tilt
+      m.uniforms.uGate.value = THREE.MathUtils.smoothstep(fill, 0.08, 0.45)
     })
   })
 
@@ -159,7 +170,7 @@ export function Steam({ pointerWorld, paused, intensity, tiltRef, anchorRef }: P
     <group ref={group} position={[0, 1.05, 0]}>
       {layers.map((l, i) => (
         <mesh key={i} position={[0, 0, l.z]} scale={[l.scale, l.scale, 1]}>
-          <planeGeometry args={[1.25, 1.25, 1, 1]} />
+          <planeGeometry args={[0.72, 0.95, 1, 1]} />
           <shaderMaterial
             ref={(m) => {
               if (m) materials.current[i] = m
@@ -175,7 +186,7 @@ export function Steam({ pointerWorld, paused, intensity, tiltRef, anchorRef }: P
               uSeed: { value: l.seed },
               uPointer: { value: new THREE.Vector2(999, 999) },
               uPush: { value: 0 },
-              uTilt: { value: 0 },
+              uGate: { value: 0 },
               uWarm: { value: warm },
               uCool: { value: cool },
             }}

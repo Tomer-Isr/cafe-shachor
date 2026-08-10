@@ -74,6 +74,62 @@ function toTexture(w: number, h: number, write: (d: Uint8ClampedArray, i: number
   return tex
 }
 
+/**
+ * Поверхность чашки одной картой: у эталонной посуды тёмная крапчатая глазурь
+ * обрывается, не доходя до дна, и ниже остаётся необожжённая глина. Именно этот
+ * обрыв и читается как «ручная работа» — гладкий однотонный корпус выдаёт модель.
+ *
+ * Карта строится по v (высота вдоль профиля LatheGeometry), поэтому граница
+ * глазури привязана к GLAZE_EDGE — доле точек профиля, а не к мировой координате.
+ */
+export function ceramicSurface(size = 1024, glazeEdge = 0.19) {
+  const speck = valueNoise(size, size, 460, 91) // крап в глазури
+  const patch = fbm(size, size, 3, 6, 5) // неровность полива крупными пятнами
+  const drip = fbm(size, 1, 2, 9, 33) // край глазури не по линейке: подтёки
+
+  const glaze = { r: 42, g: 36, b: 31 }
+  const clay = { r: 116, g: 78, b: 58 }
+
+  const edgeAt = (x: number) => glazeEdge + (drip[x] - 0.5) * 0.055
+
+  const color = toTexture(size, size, (d, i, x, y) => {
+    const v = 1 - y / size
+    const idx = y * size + x
+    const e = edgeAt(x)
+    // узкая полоса перехода: глазурь натекает на глину, а не отрезана ножом
+    const g = Math.min(1, Math.max(0, (v - e) / 0.035))
+    const s = speck[idx]
+    // крап: редкие светлые вкрапления шамота, видны только в глазури
+    const fleck = s > 0.93 ? (s - 0.93) / 0.07 : 0
+    const p = (patch[idx] - 0.5) * 26
+    const gl = { r: glaze.r + p + fleck * 52, g: glaze.g + p + fleck * 43, b: glaze.b + p + fleck * 34 }
+    const cl = { r: clay.r + p * 1.4, g: clay.g + p * 1.2, b: clay.b + p }
+    d[i] = lerp(cl.r, gl.r, g)
+    d[i + 1] = lerp(cl.g, gl.g, g)
+    d[i + 2] = lerp(cl.b, gl.b, g)
+    d[i + 3] = 255
+  })
+  color.colorSpace = THREE.SRGBColorSpace
+
+  const roughness = toTexture(size, size, (d, i, x, y) => {
+    const v = 1 - y / size
+    const idx = y * size + x
+    const g = Math.min(1, Math.max(0, (v - edgeAt(x)) / 0.035))
+    // глина матовая (0.94), глазурь глянцевая (0.3) с разводами полива
+    const r = lerp(0.94, 0.3 + (patch[idx] - 0.5) * 0.22, g)
+    d[i] = d[i + 1] = d[i + 2] = Math.min(255, Math.max(0, r * 255))
+    d[i + 3] = 255
+  })
+
+  // шов: шум не бесшовен, поэтому края смыкаются зеркалом, а не встык
+  for (const t of [color, roughness]) {
+    t.wrapS = THREE.MirroredRepeatWrapping
+    t.wrapT = THREE.ClampToEdgeWrapping
+  }
+
+  return { color, roughness }
+}
+
 /** Карта шероховатости керамики: полив лежит неровно, кромка чуть матовее */
 export function ceramicRoughness(size = 512): THREE.Texture {
   const n = fbm(size, size, 4, 4, 7)
@@ -178,5 +234,11 @@ export function stoneMaps(size = 512): { color: THREE.Texture; roughness: THREE.
   })
   // цвет камня — единственная карта здесь, которая действительно цвет
   color.colorSpace = THREE.SRGBColorSpace
+  // шов: шум не бесшовен, поэтому края смыкаются зеркалом, а не встык
+  for (const t of [color, roughness]) {
+    t.wrapS = THREE.MirroredRepeatWrapping
+    t.wrapT = THREE.ClampToEdgeWrapping
+  }
+
   return { color, roughness }
 }
