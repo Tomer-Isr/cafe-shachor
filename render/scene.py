@@ -39,6 +39,7 @@ DEVICE = arg("--device", "auto")  # auto | cpu | optix | cuda
 KEY = float(arg("--key", "5"))            # окно на восток, основной
 RIM = float(arg("--rim", "400"))          # узкий контровой стрип: рисует силуэт
 FILL_LIGHT = float(arg("--fill", "0.6"))  # холодный подсвет спереди
+CEIL = float(arg("--ceil", "1.4"))        # свод: живёт в отражении кофе, не в свете
 EXPOSURE = float(arg("--exposure", "-0.40"))
 
 clamp = lambda v, a, b: max(a, min(b, v))
@@ -51,11 +52,12 @@ def smoothstep(e0, e1, x):
 
 
 # фазы хореографии
-APPROACH = smoothstep(0.16, 0.44, PHASE)
-POUR = clamp((PHASE - 0.26) / 0.42, 0.0, 1.0)
-TOP = smoothstep(0.74, 1.0, PHASE)
+# Налив привязан к третьему блоку раскадровки (0.432–0.580 прокрутки): начинается
+# на входе в блок и заканчивается к его концу, чтобы в блоке «Чёрное зеркало»
+# чашка была уже полной, а волна на поверхности — затухающей.
+POUR = clamp((PHASE - 0.440) / 0.150, 0.0, 1.0)
 FILL = smoothstep(0.0, 1.0, POUR)
-FLOW = min(clamp(POUR / 0.12, 0, 1), clamp((1 - POUR) / 0.16, 0, 1))
+FLOW = min(clamp(POUR / 0.10, 0, 1), clamp((1 - POUR) / 0.14, 0, 1))
 
 # ── чистая сцена ─────────────────────────────────────────────────────────────
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -173,15 +175,136 @@ def inner_radius(z):
             return r0 + (r1 - r0) * (z - z0) / (z1 - z0)
     return inner[-1][1]
 
-bpy.ops.mesh.primitive_circle_add(vertices=192, radius=inner_radius(level) - 0.0004, fill_type="NGON", location=(0, 0, level))
-coffee = bpy.context.object
-coffee.name = "Coffee"
+def coffee_surface(radius, height, name="Coffee"):
+    """Поверхность налитого кофе — сетка колец, а не плоский диск.
+
+    Плоскости с текстурной рябью недостаточно: рябь в нормали не гнёт
+    отражение, поэтому поверхность читается мёртвым куском пластика. Здесь
+    гнётся сама геометрия, и отражение свода ходит вместе с ней.
+
+    Две волны разной природы, как в настоящей чашке:
+      · расходящаяся от точки удара струи, затухающая к стенке;
+      · слошинг — общий перекос всей массы, самая низкая мода колебания,
+        та, из-за которой кофе плещется через край при ходьбе.
+    """
+    rings, seg = 26, 96
+    me = bpy.data.meshes.new(name)
+    obj = bpy.data.objects.new(name, me)
+    bpy.context.collection.objects.link(obj)
+
+    # Жизнь поверхности идёт по прокрутке: во время налива волна сильная,
+    # после — затухает, но не умирает совсем.
+    t = PHASE * 26.0
+    impact = 0.00027 * (0.35 + 0.65 * FLOW)
+    slosh = 0.00022 * (0.30 + 0.70 * FLOW)
+    decay = 62.0
+
+    def z_at(r, a):
+        w = math.sin(785.0 * r - t) * math.exp(-r * decay) * impact
+        # перекос: у стенки максимален, в центре нуля — это и есть слошинг
+        s = (r / radius) * math.cos(a - 0.6) * math.sin(t * 0.42) * slosh
+        return w + s
+
+    bm = bmesh.new()
+    center = bm.verts.new((0, 0, z_at(0.0, 0.0)))
+    prev = None
+    for ri in range(1, rings + 1):
+        r = radius * (ri / rings) ** 0.85   # кольца гуще к стенке, где круче волна
+        ring = []
+        for si in range(seg):
+            a = (si / seg) * math.tau
+            ring.append(bm.verts.new((r * math.cos(a), r * math.sin(a), z_at(r, a))))
+        if prev is None:
+            for si in range(seg):
+                bm.faces.new((center, ring[si], ring[(si + 1) % seg]))
+        else:
+            for si in range(seg):
+                sj = (si + 1) % seg
+                bm.faces.new((prev[si], ring[si], ring[sj], prev[sj]))
+        prev = ring
+    bm.normal_update()
+    bm.to_mesh(me)
+    bm.free()
+    for p in me.polygons:
+        p.use_smooth = True
+    obj.location = (0, 0, height)
+    return obj
+
+
+coffee = coffee_surface(inner_radius(level) - 0.0004, level)
 coffee.hide_render = FILL <= 0.02
 
 # стойка
 bpy.ops.mesh.primitive_plane_add(size=6, location=(0, 0, 0))
 counter = bpy.context.object
 counter.name = "Counter"
+
+
+# ── зерно ────────────────────────────────────────────────────────────────────
+# Россыпь на стойке: блок «жарим по вторникам» в раскадровке. Зерно нельзя
+# слепить из шара — узнаваемым его делает борозда по плоской стороне, поэтому
+# лепим вручную: сфера → сплющивание в реальные 10.4 × 7.2 × 6 мм → вдавленный
+# по длине жёлоб. Без жёлоба россыпь читается фасолью или галькой.
+def coffee_bean(name, seed=0):
+    rnd = __import__("random").Random(seed)
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=28, ring_count=16, radius=1.0)
+    bean = bpy.context.object
+    bean.name = name
+
+    me = bean.data
+    L, W, H = 0.0052, 0.0036, 0.0030
+    # у каждого зерна своя лёгкая неправильность: одинаковые клоны видны сразу
+    jitter = 1.0 + rnd.uniform(-0.09, 0.09)
+    L *= jitter
+    W *= 1.0 + rnd.uniform(-0.07, 0.07)
+
+    for v in me.vertices:
+        x, y, z = v.co
+        x *= L
+        y *= W
+        z *= H
+        # жёлоб: глубокий у оси, сходит на нет к бокам и к торцам
+        along = max(0.0, 1.0 - (x / L) ** 2)
+        across = math.exp(-((y / (W * 0.34)) ** 2))
+        groove = H * 1.02 * across * along
+        z -= groove if z > 0 else -groove * 0.12
+        # бок зерна чуть пухлее у жёлоба — так лежит настоящее зерно
+        y *= 1.0 + 0.10 * across * along
+        v.co = (x, y, z)
+
+    for p in me.polygons:
+        p.use_smooth = True
+    return bean
+
+
+BEAN_SPILL = 26
+beans = []
+if BEAN_SPILL:
+    import random as _rnd
+    spread = _rnd.Random(7)
+    proto = coffee_bean("BeanProto", seed=0)
+    proto.hide_render = True
+    proto.hide_viewport = True
+    for i in range(BEAN_SPILL):
+        b = coffee_bean(f"Bean{i:02d}", seed=i + 1)
+        # Пятно справа-впереди от чашки: в общем плане это натюрморт на стойке,
+        # а в блоке «Зерно» камера приходит сюда и россыпь становится сюжетом.
+        ang = spread.uniform(0, math.tau)
+        rad = 0.038 * math.sqrt(spread.random())
+        # каждое пятое зерно лежит на соседях: ровный ковёр в один слой
+        # читается разложенным вручную, а не рассыпанным
+        stacked = i % 5 == 0 and i > 0
+        b.location = (
+            0.105 + math.cos(ang) * rad,
+            -0.028 + math.sin(ang) * rad * 0.62,
+            0.0030 + (0.0042 if stacked else 0.0),
+        )
+        b.rotation_euler = (
+            spread.uniform(-1.1, 1.1) if stacked else spread.uniform(-0.35, 0.35),
+            spread.uniform(-0.3, 0.3),
+            spread.uniform(0, math.tau),
+        )
+        beans.append(b)
 
 # ── струя и носик ────────────────────────────────────────────────────────────
 SPOUT_Z = 0.175
@@ -222,17 +345,47 @@ if FLOW > 0.02:
         for p in d.data.polygons:
             p.use_smooth = True
 
-    # венчик в точке удара
+    # Венчик в точке удара. Ровный тор читается надетым колечком: настоящая
+    # корона всплеска зубчатая, и с каждого зубца срывается капля. Зубцы лепим
+    # по углу, фазу гоняем прокруткой — корона живёт, а не стоит.
     bpy.ops.mesh.primitive_torus_add(
         major_radius=0.0075, minor_radius=0.0016,
-        major_segments=48, minor_segments=12,
-        location=(0, 0, level + 0.0012),
+        major_segments=64, minor_segments=14,
+        location=(0, 0, 0),
     )
     crown = bpy.context.object
     crown.name = "Crown"
     crown.scale = (1.0, 1.0, 0.55)
+
+    TEETH = 11
+    crown_phase = PHASE * 21.0
+    for v in crown.data.vertices:
+        x, y, z = v.co
+        a = math.atan2(y, x)
+        tooth = max(0.0, math.sin(TEETH * a + crown_phase))
+        lift = 0.0042 * tooth ** 1.6
+        # зубец не только тянется вверх, но и расходится наружу
+        grow = 1.0 + 0.16 * tooth
+        v.co = (x * grow, y * grow, z + (lift if z > -0.0004 else lift * 0.15))
+    crown.location = (0, 0, level + 0.0012)
     for pl in crown.data.polygons:
         pl.use_smooth = True
+
+    # брызги: с верхушек зубцов срываются капли и летят вверх-наружу
+    for i in range(7):
+        a = (i / 7) * math.tau + crown_phase * 0.35
+        rise = 0.006 + 0.010 * ((i * 0.37 + PHASE * 3.1) % 1.0)
+        rad = 0.0085 + rise * 0.55
+        bpy.ops.mesh.primitive_uv_sphere_add(
+            segments=16, ring_count=9, radius=0.00075 + (i % 3) * 0.00022,
+            location=(math.cos(a) * rad, math.sin(a) * rad, level + rise),
+        )
+        sp = bpy.context.object
+        sp.name = f"Splash{i}"
+        # капля в полёте вытянута по траектории, а не идеальный шарик
+        sp.scale = (1.0, 1.0, 1.35)
+        for pl in sp.data.polygons:
+            pl.use_smooth = True
 
 # носик виден, только пока льют
 if FLOW > 0.01:
@@ -384,8 +537,12 @@ if os.path.exists(DECAL):
 
 # Предмет живёт задолго до финала: проворот начинается на втором экране,
 # следом чашка чуть кренится — будто её только что поставили и она качнулась.
-SPIN = math.radians(-97) + math.radians(30) * smoothstep(0.10, 0.62, PHASE)
-LEAN = math.radians(5.5) * smoothstep(0.14, 0.46, PHASE)
+# Чашка стоит неподвижно. Прежний медленный проворот с креном имел смысл при
+# непрерывном проезде, но в поблочной раскадровке камера внутри блока стоит —
+# и предмет, тихо заваливающийся сам по себе, читается ошибкой, а не жизнью.
+# Разворот подобран так, чтобы печать смотрела в камеру блока «Налив».
+SPIN = math.radians(-106)
+LEAN = 0.0
 cup.rotation_euler[2] = SPIN
 cup.rotation_euler[1] = LEAN
 # при крене ножка ушла бы в блюдце — приподнимаем на высоту касания
@@ -413,11 +570,13 @@ set_input(bsdf_c, "Roughness", 0.055)
 set_input(bsdf_c, "IOR", 1.34)
 set_input(bsdf_c, "Specular IOR Level", 0.6)
 ripple_bump = nt_c.nodes.new("ShaderNodeBump")
-ripple_bump.inputs["Strength"].default_value = 0.12 + FLOW * 0.22
+# Крупную волну теперь несёт геометрия, здесь остаётся только микро-рябь:
+# сильный bump поверх гнутой сетки давал бы двойную рябь и «шевелёнку».
+ripple_bump.inputs["Strength"].default_value = 0.04
 ripple_wave = nt_c.nodes.new("ShaderNodeTexWave")
 ripple_wave.wave_type = "RINGS"
-ripple_wave.inputs["Scale"].default_value = 34.0
-ripple_wave.inputs["Distortion"].default_value = 3.0
+ripple_wave.inputs["Scale"].default_value = 90.0
+ripple_wave.inputs["Distortion"].default_value = 4.0
 nt_c.links.new(ripple_wave.outputs["Fac"], ripple_bump.inputs["Height"])
 nt_c.links.new(ripple_bump.outputs["Normal"], bsdf_c.inputs["Normal"])
 coffee.data.materials.append(mat_c)
@@ -434,6 +593,52 @@ nt_s.links.new(stone_noise.outputs["Fac"], stone_bump.inputs["Height"])
 nt_s.links.new(stone_bump.outputs["Normal"], bsdf_s.inputs["Normal"])
 counter.data.materials.append(mat_s)
 
+# зерно: тёмная обжарка — почти чёрное, с масляным блеском выступающих мест
+# и светлой серебристой плёнкой, оставшейся в жёлобе
+if beans:
+    mat_bn, nt_bn, bsdf_bn = new_material("Bean")
+    # Вогнутость меша даёт бесплатную маску жёлоба: разворачивать UV на два
+    # десятка зёрен ради одной полоски было бы расточительством.
+    geo_bn = nt_bn.nodes.new("ShaderNodeNewGeometry")
+    pointy = nt_bn.nodes.new("ShaderNodeMapRange")
+    # Pointiness: 0.5 — плоское место, меньше — вогнутое. Диапазон держим целиком
+    # ниже 0.5, иначе гладкий бок зерна (ровно 0.5) попадает в середину маски и
+    # красится плёнкой наполовину — зерно выходит цвета молочного шоколада.
+    pointy.inputs["From Min"].default_value = 0.40
+    pointy.inputs["From Max"].default_value = 0.49
+    nt_bn.links.new(geo_bn.outputs["Pointiness"], pointy.inputs["Value"])
+
+    roast = nt_bn.nodes.new("ShaderNodeRGB")
+    roast.outputs[0].default_value = (0.048, 0.021, 0.011, 1)
+    silverskin = nt_bn.nodes.new("ShaderNodeRGB")
+    silverskin.outputs[0].default_value = (0.31, 0.22, 0.15, 1)
+
+    bn_mix = nt_bn.nodes.new("ShaderNodeMix")
+    bn_mix.data_type = "RGBA"
+    nt_bn.links.new(pointy.outputs["Result"], bn_mix.inputs["Factor"])
+    nt_bn.links.new(silverskin.outputs[0], bn_mix.inputs[6])
+    nt_bn.links.new(roast.outputs[0], bn_mix.inputs[7])
+    nt_bn.links.new(bn_mix.outputs[2], bsdf_bn.inputs["Base Color"])
+
+    # масло выступает на гребнях, в жёлобе поверхность сухая и матовая
+    bn_rough = nt_bn.nodes.new("ShaderNodeMix")
+    bn_rough.data_type = "FLOAT"
+    bn_rough.inputs[2].default_value = 0.78
+    bn_rough.inputs[3].default_value = 0.31
+    nt_bn.links.new(pointy.outputs["Result"], bn_rough.inputs["Factor"])
+    nt_bn.links.new(bn_rough.outputs[0], bsdf_bn.inputs["Roughness"])
+
+    bn_bump = nt_bn.nodes.new("ShaderNodeBump")
+    bn_bump.inputs["Strength"].default_value = 0.22
+    bn_pore = nt_bn.nodes.new("ShaderNodeTexNoise")
+    bn_pore.inputs["Scale"].default_value = 620.0
+    bn_pore.inputs["Detail"].default_value = 3.0
+    nt_bn.links.new(bn_pore.outputs["Fac"], bn_bump.inputs["Height"])
+    nt_bn.links.new(bn_bump.outputs["Normal"], bsdf_bn.inputs["Normal"])
+
+    for b in beans:
+        b.data.materials.append(mat_bn)
+
 if FLOW > 0.02:
     # Кофе — не крашеное стекло: он гасит свет по мере прохождения. Поэтому
     # тонкая струя на просвет светится янтарём, а капля покрупнее почти черна.
@@ -449,7 +654,7 @@ if FLOW > 0.02:
     out_l = next(n for n in nt_l.nodes if n.type == "OUTPUT_MATERIAL")
     nt_l.links.new(absorb.outputs["Volume"], out_l.inputs["Volume"])
     for o in bpy.data.objects:
-        if o.name.startswith("Stream") or o.name.startswith("Drop") or o.name.startswith("Crown"):
+        if o.name.startswith(("Stream", "Drop", "Crown", "Splash")):
             o.data.materials.append(mat_l)
 
 if FLOW > 0.01:
@@ -529,9 +734,10 @@ if RIM > 0:
     rim.visible_diffuse = False
     rim.visible_volume_scatter = False
 
-    # Стрип светит только на посуду. Иначе он бьёт зеркальным бликом в камень
-    # стойки и выжигает половину кадра белой заплатой: источник, достаточно
-    # яркий для отражения в глазури, для полированного камня уже перебор.
+    # Стрип светит только на посуду. Ни камень стойки, ни зерно в приёмники не
+    # входят: камень он выжигает белой заплатой, а зерно — шероховатое, и
+    # зеркальный вклад такой мощности растекается по всей его поверхности,
+    # превращая тёмную обжарку в белые камушки (проверено кадром).
     try:
         receivers = bpy.data.collections.new("rim_receivers")
         for o in (cup, saucer):
@@ -541,6 +747,31 @@ if RIM > 0:
         # На всякий случай: без привязки стрип придётся держать слабым.
         print(f"[scene] light linking недоступен ({e}) — понижаю контровой")
         rim.data.energy = min(RIM, 40)
+
+# Отражаемый свод. Кофе — чёрное зеркало, и без объекта над чашкой оно
+# показывает пустоту: поверхность выходит угольной дырой, а волны на ней не
+# видны вовсе, потому что гнуть в отражении нечего. Эта панель существует
+# только ради отражения — в диффуз и в дымку она не бьёт, общей яркости кадра
+# не поднимает, но даёт кофе светлую полосу, которую ломает каждая волна.
+if CEIL > 0:
+    # Ставится не «над чашкой», а туда, куда уходит отражённый луч: камера
+    # смотрит на кофе спереди-сверху, значит зеркало показывает ей то, что
+    # находится СЗАДИ и выше. Панель прямо над головой в отражение не попадает
+    # вовсе — проверено кадром, поверхность оставалась угольной.
+    bpy.ops.object.light_add(type="AREA", location=(-0.085, 0.265, 0.400))
+    ceil = bpy.context.object
+    ceil.data.shape = "RECTANGLE"
+    # Размер решает не меньше энергии: панель во всю поверхность отражается
+    # сплошной заливкой и кофе читается молоком. Нужна полоса — тогда часть
+    # зеркала остаётся чёрной, а свет ломается волнами по светлой дорожке.
+    ceil.data.size = 0.115
+    ceil.data.size_y = 0.032
+    ceil.data.energy = CEIL
+    ceil.data.color = (1.0, 0.90, 0.76)
+    ceil.rotation_euler = (math.radians(34), 0, math.radians(-6))
+    ceil.visible_camera = False
+    ceil.visible_diffuse = False
+    ceil.visible_volume_scatter = False
 
 
 # ── атмосфера ────────────────────────────────────────────────────────────────
@@ -612,39 +843,90 @@ if FILL > 0.25:
     nts.links.new(princ.outputs["Volume"], out_st.inputs["Volume"])
     steam.data.materials.append(mat_st)
 
-# ── камера ───────────────────────────────────────────────────────────────────
-# Кинематографичный проход: камера обходит предмет по дуге, одновременно
-# опускаясь к столу и приближаясь. Это «долли вокруг» — приём, который читается
-# дорого именно потому, что меняются сразу три вещи: угол, дистанция и высота.
+# ── камера: пять блоков, четыре перехода ─────────────────────────────────────
+# Раньше здесь был один равномерный проезд от общего плана к макро — прокрутка
+# читалась перемоткой, а не рассказом («анимация бессмысленная», вердикт Томера).
 #
-# Диафрагма открывается по ходу: на общем плане резко всё, к финалу фон
-# распадается в боке. Так объектив ведёт себя в реальной съёмке.
-AZ_START, AZ_END = math.radians(-46), math.radians(28)
-azimuth = AZ_START + (AZ_END - AZ_START) * smoothstep(0.0, 1.0, PHASE)
+# Теперь плёнка собрана как раскадровка (docs/STORYBOARD.md): внутри блока
+# камера почти стоит и лишь чуть дрейфует, а между блоками быстро перебрасывает
+# взгляд. Стоячий кадр не значит застывший: в блоке живут свет, пар и жидкость,
+# поэтому кадры всё равно все разные.
+#
+# Каждое состояние: (позиция камеры, точка взгляда, фокусное, диафрагма, сдвиг).
+SHOTS = [
+    # 01 «Окно на восток» — общий план стойки, чашка ещё пустая
+    (dict(cam=(-0.42, -0.62, 0.150), look=(0, 0, 0.045), lens=50, fstop=8.0, shift=0.17),
+     dict(cam=(-0.37, -0.57, 0.142), look=(0, 0, 0.045), lens=50, fstop=8.0, shift=0.17)),
+    # 02 «Зерно» — макро россыпи, чашка размытым пятном позади
+    (dict(cam=(0.015, -0.305, 0.078), look=(0.105, -0.028, 0.004), lens=85, fstop=5.6, shift=0.06),
+     dict(cam=(0.055, -0.280, 0.062), look=(0.105, -0.028, 0.004), lens=85, fstop=5.6, shift=0.06)),
+    # 03 «Налив» — средний план, камера стоит, работает струя
+    (dict(cam=(-0.105, -0.335, 0.108), look=(0, 0, 0.050), lens=70, fstop=4.0, shift=0.15),
+     dict(cam=(-0.080, -0.310, 0.098), look=(0, 0, 0.052), lens=70, fstop=4.0, shift=0.15)),
+    # 04 «Чёрное зеркало» — взгляд внутрь, поверхность на весь кадр
+    (dict(cam=(0.042, -0.118, 0.188), look=(0, 0, 0.066), lens=70, fstop=6.0, shift=0.03),
+     dict(cam=(0.028, -0.102, 0.179), look=(0, 0, 0.066), lens=70, fstop=6.0, shift=0.03)),
+    # 05 «Готово» — отступ; чашка уходит вбок, освобождая место под контент
+    (dict(cam=(-0.155, -0.395, 0.112), look=(0, 0, 0.046), lens=55, fstop=5.0, shift=0.26),
+     dict(cam=(-0.200, -0.455, 0.122), look=(0, 0, 0.046), lens=55, fstop=5.0, shift=0.30)),
+]
 
-# дистанция падает не линейно: сближение ускоряется к наливу и замирает в финале
-dist = lerp(0.86, 0.355, smoothstep(0.05, 0.82, PHASE))
-# высота: от уровня стойки вниз к «глазам гостя», в самом конце — над кромкой
-cam_z = lerp(0.115, 0.055, smoothstep(0.0, 0.5, PHASE)) + TOP * 0.29
-look_z = lerp(0.040, 0.052, APPROACH) - TOP * 0.012
+BLOCK, TRANS = 0.148, 0.068
 
-cam_x = math.sin(azimuth) * dist
-cam_y = -math.cos(azimuth) * dist
 
-bpy.ops.object.camera_add(location=(cam_x, cam_y, cam_z))
+def choreography(p):
+    """Состояние камеры на прокрутке p: внутри блока — дрейф, между — бросок."""
+    span = BLOCK + TRANS
+    for i, (a, b) in enumerate(SHOTS):
+        start = i * span
+        if p < start + BLOCK or i == len(SHOTS) - 1:
+            t = clamp((p - start) / BLOCK, 0.0, 1.0)
+            return a, b, t          # дрейф внутри блока: линейно и еле-еле
+        if p < start + span:
+            t = smoothstep(0.0, 1.0, (p - start - BLOCK) / TRANS)
+            return b, SHOTS[i + 1][0], t   # бросок к следующему блоку
+    return SHOTS[-1][0], SHOTS[-1][1], 1.0
+
+
+frm, to, tt = choreography(PHASE)
+mix3 = lambda k: tuple(lerp(frm[k][j], to[k][j], tt) for j in range(3))
+cam_pos = mix3("cam")
+look_at = mix3("look")
+
+bpy.ops.object.camera_add(location=cam_pos)
 cam = bpy.context.object
 scene.camera = cam
-cam.data.lens = lerp(52, 85, smoothstep(0.2, 0.9, PHASE))
+cam.data.lens = lerp(frm["lens"], to["lens"], tt)
 cam.data.sensor_width = 36
 # сдвиг кадра вместо доворота: перспектива предмета не искажается,
 # а сбоку освобождается место под текст
-cam.data.shift_x = 0.16
+cam.data.shift_x = lerp(frm["shift"], to["shift"], tt)
 cam.data.dof.use_dof = True
-cam.data.dof.aperture_fstop = lerp(6.0, 2.6, smoothstep(0.25, 0.95, PHASE))
+cam.data.dof.aperture_fstop = lerp(frm["fstop"], to["fstop"], tt)
 
 target = bpy.data.objects.new("Target", None)
 bpy.context.collection.objects.link(target)
-target.location = (0, 0, look_z)
+target.location = look_at
+
+# Отладочный ракурс: посмотреть на кусок сцены, не трогая хореографию.
+#   --peek beans   россыпь зерна крупно
+PEEK = arg("--peek", "none")
+if PEEK == "beans":
+    target.location = (0.105, -0.028, 0.004)
+    # 85 мм с тридцати сантиметров: кадр шириной ~10 см — россыпь целиком.
+    # Ближе подходить нельзя: на 15 см это уже макро 1.3:1, где резкости
+    # остаются доли миллиметра и вся россыпь плывёт независимо от диафрагмы.
+    cam.location = (0.020, -0.300, 0.075)
+    cam.data.lens = 85
+    cam.data.shift_x = 0.0
+    cam.data.dof.aperture_fstop = 5.6
+elif PEEK == "top":
+    # взгляд в чашку: проверять поверхность кофе и корону всплеска
+    target.location = (0, 0, level)
+    cam.location = (0.045, -0.105, level + 0.115)
+    cam.data.lens = 70
+    cam.data.shift_x = 0.0
+    cam.data.dof.aperture_fstop = 6.0
 track = cam.constraints.new("TRACK_TO")
 track.target = target
 track.track_axis = "TRACK_NEGATIVE_Z"
@@ -698,6 +980,6 @@ pick_device()
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 scene.render.filepath = OUT
 scene.render.image_settings.file_format = "PNG"
-print(f"[scene] phase={PHASE} fill={FILL:.2f} flow={FLOW:.2f} approach={APPROACH:.2f} top={TOP:.2f}")
+print(f"[scene] phase={PHASE} fill={FILL:.2f} flow={FLOW:.2f}")
 bpy.ops.render.render(write_still=True)
 print(f"[scene] saved {OUT}")
