@@ -32,14 +32,20 @@ bbox = d.textbbox((0, 0), text, font=heb)
 d.text(((W - (bbox[2] - bbox[0])) / 2 - bbox[0], H * 0.34 - (bbox[3] - bbox[1]) / 2 - bbox[1]),
        text, font=heb, fill=ink + (255,))
 
-# латинская строка вразрядку
+# Латинская строка — отдельным слоем, который зеркалится перед наложением.
+# Иврит и латиницу движок раскладывает по-разному, и на стенке одна из строк
+# всегда оказывалась перевёрнутой. Разводим их по слоям и правим только латынь.
+lat_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+dl = ImageDraw.Draw(lat_layer)
 sp = 10
-total = sum(d.textlength(ch, font=lat) + sp for ch in LAT) - sp
+total = sum(dl.textlength(ch, font=lat) + sp for ch in LAT) - sp
 x = (W - total) / 2
 y = H * 0.58
 for ch in LAT:
-    d.text((x, y), ch, font=lat, fill=ink + (215,))
-    x += d.textlength(ch, font=lat) + sp
+    dl.text((x, y), ch, font=lat, fill=ink + (215,))
+    x += dl.textlength(ch, font=lat) + sp
+lat_layer = lat_layer.transpose(Image.FLIP_LEFT_RIGHT)
+img.alpha_composite(lat_layer)
 
 # выедание обжигом: рваная альфа вместо ровной заливки
 random.seed(7)
@@ -59,9 +65,8 @@ for j in range(H):
             eaten = 0.5 + 0.5 * min(1.0, max(0.0, (k - 0.32) / 0.3))
             a[i, j] = int(a[i, j] * eaten)
 
-# На выпуклой стенке текстура читается с обратной стороны, поэтому зеркалим
-# её здесь: так надпись остаётся правильной независимо от знака UV в нодах.
-img = img.transpose(Image.FLIP_LEFT_RIGHT)
+# Зеркалить текстуру НЕ нужно: знак U в материале уже разворачивает её на
+# стенке. С двойной инверсией слово читалось наоборот — «רוחש» вместо «שחור».
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 img.save(OUT)
