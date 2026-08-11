@@ -131,6 +131,7 @@ def lathe(profile, name, segments=192, wobble=0.0):
 
 cup = lathe(CUP_PROFILE, "Cup", wobble=0.012)
 saucer = lathe(SAUCER_PROFILE, "Saucer", wobble=0.006)
+saucer.rotation_euler[2] = math.radians(18)
 
 # ручка: тор, вдавленный в стенку, затем объединённый с корпусом —
 # так стык получается настоящим переходом, а не «заклёпкой» поверх
@@ -181,25 +182,50 @@ if FLOW > 0.02:
     height = SPOUT_Z - level
     # струя: конус, сужающийся книзу — поток ускоряется, сечение падает
     bpy.ops.mesh.primitive_cone_add(
-        vertices=48, radius1=0.0028, radius2=0.0013, depth=height,
+        vertices=48, radius1=0.0021, radius2=0.0010, depth=height,
         location=(0, 0, level + height / 2),
     )
     stream = bpy.context.object
     stream.name = "Stream"
+    wave = stream.modifiers.new("necking", "WAVE")
+    wave.use_x = False
+    wave.use_y = False
+    wave.use_normal = True
+    wave.height = 0.0011
+    wave.width = 0.012
+    wave.narrowness = 6.0
+    wave.speed = 0.0
+    wave.time_offset = PHASE * 40.0
+    sub = stream.modifiers.new("smooth", "SUBSURF")
+    sub.levels = sub.render_levels = 1
     for p in stream.data.polygons:
         p.use_smooth = True
 
     # капли: ниже по потоку сплошная нить распадается
-    for i in range(7):
-        t = 0.45 + i * 0.075
-        z = SPOUT_Z - height * t
-        off = 0.0016 * math.sin(i * 2.3)
-        bpy.ops.mesh.primitive_uv_sphere_add(segments=20, ring_count=12, radius=0.0016 + i * 0.00012, location=(off, off * 0.6, z))
+    for i in range(9 if FLOW < 0.55 else 0):
+        t = 0.58 + i * 0.045
+        z = SPOUT_Z - height * min(0.99, t)
+        off = 0.0022 * math.sin(i * 2.3 + PHASE * 9)
+        r = 0.0009 + (i % 3) * 0.00035
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=18, ring_count=10, radius=r, location=(off, off * 0.5, z))
         d = bpy.context.object
         d.name = f"Drop{i}"
-        d.scale = (1, 1, 1.5)
+        # падающая капля вытянута по движению, а не идеальный шарик
+        d.scale = (1, 1, 1.9 + (i % 4) * 0.25)
         for p in d.data.polygons:
             p.use_smooth = True
+
+    # венчик в точке удара
+    bpy.ops.mesh.primitive_torus_add(
+        major_radius=0.0075, minor_radius=0.0016,
+        major_segments=48, minor_segments=12,
+        location=(0, 0, level + 0.0012),
+    )
+    crown = bpy.context.object
+    crown.name = "Crown"
+    crown.scale = (1.0, 1.0, 0.55)
+    for pl in crown.data.polygons:
+        pl.use_smooth = True
 
 # носик виден, только пока льют
 if FLOW > 0.01:
@@ -346,7 +372,14 @@ if os.path.exists(DECAL):
     nt.links.new(rough.outputs[0], rough_print.inputs[2])
     nt.links.new(rough_print.outputs[0], bsdf.inputs["Roughness"])
 
-cup.rotation_euler[2] = math.radians(-97)
+# Предмет живёт задолго до финала: проворот начинается на втором экране,
+# следом чашка чуть кренится — будто её только что поставили и она качнулась.
+SPIN = math.radians(-97) + math.radians(30) * smoothstep(0.10, 0.62, PHASE)
+LEAN = math.radians(5.5) * smoothstep(0.14, 0.46, PHASE)
+cup.rotation_euler[2] = SPIN
+cup.rotation_euler[1] = LEAN
+# при крене ножка ушла бы в блюдце — приподнимаем на высоту касания
+cup.location.z = abs(math.sin(LEAN)) * 0.021
 cup.data.materials.append(mat)
 
 # У блюдца та же глазурь, но без глиняного пояса: маска по высоте сделала бы
@@ -369,6 +402,14 @@ set_input(bsdf_c, "Base Color", (0.012, 0.006, 0.003, 1))
 set_input(bsdf_c, "Roughness", 0.055)
 set_input(bsdf_c, "IOR", 1.34)
 set_input(bsdf_c, "Specular IOR Level", 0.6)
+ripple_bump = nt_c.nodes.new("ShaderNodeBump")
+ripple_bump.inputs["Strength"].default_value = 0.12 + FLOW * 0.22
+ripple_wave = nt_c.nodes.new("ShaderNodeTexWave")
+ripple_wave.wave_type = "RINGS"
+ripple_wave.inputs["Scale"].default_value = 34.0
+ripple_wave.inputs["Distortion"].default_value = 3.0
+nt_c.links.new(ripple_wave.outputs["Fac"], ripple_bump.inputs["Height"])
+nt_c.links.new(ripple_bump.outputs["Normal"], bsdf_c.inputs["Normal"])
 coffee.data.materials.append(mat_c)
 
 # камень стойки
@@ -384,13 +425,21 @@ nt_s.links.new(stone_bump.outputs["Normal"], bsdf_s.inputs["Normal"])
 counter.data.materials.append(mat_s)
 
 if FLOW > 0.02:
+    # Кофе — не крашеное стекло: он гасит свет по мере прохождения. Поэтому
+    # тонкая струя на просвет светится янтарём, а капля покрупнее почти черна.
+    # Даёт это объёмное поглощение внутри, а не цвет поверхности.
     mat_l, nt_l, bsdf_l = new_material("Liquid")
-    set_input(bsdf_l, "Base Color", (0.09, 0.035, 0.012, 1))
-    set_input(bsdf_l, "Roughness", 0.03)
-    set_input(bsdf_l, "Transmission Weight", 1.0)
-    set_input(bsdf_l, "IOR", 1.35)
+    set_input(bsdf_l, "Base Color", (0.055, 0.022, 0.009, 1))
+    set_input(bsdf_l, "Roughness", 0.02)
+    set_input(bsdf_l, "Transmission Weight", 0.5)
+    set_input(bsdf_l, "IOR", 1.34)
+    absorb = nt_l.nodes.new("ShaderNodeVolumeAbsorption")
+    absorb.inputs["Color"].default_value = (0.80, 0.30, 0.07, 1)
+    absorb.inputs["Density"].default_value = 165.0
+    out_l = next(n for n in nt_l.nodes if n.type == "OUTPUT_MATERIAL")
+    nt_l.links.new(absorb.outputs["Volume"], out_l.inputs["Volume"])
     for o in bpy.data.objects:
-        if o.name.startswith("Stream") or o.name.startswith("Drop"):
+        if o.name.startswith("Stream") or o.name.startswith("Drop") or o.name.startswith("Crown"):
             o.data.materials.append(mat_l)
 
 if FLOW > 0.01:

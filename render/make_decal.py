@@ -12,7 +12,8 @@ import os, random, math
 W, H = 1500, 512
 OUT = os.path.join(os.path.dirname(__file__), "assets", "decal.png")
 
-HEB = "שחור"          # PIL сам раскладывает иврит справа налево — разворачивать строку НЕ нужно
+HEB = "שחור"          # рисовалка НЕ применяет двунаправленную раскладку и ставит
+                      # буквы в порядке кодов, поэтому разворачиваем строку сами
 LAT = "SHACHOR · JAFFA"
 
 FONT_HEB = "C:/Windows/Fonts/frank.ttf"   # Frank Ruhl — шрифт бренда
@@ -27,25 +28,19 @@ lat = ImageFont.truetype(FONT_LAT, 46)
 ink = (232, 226, 214)  # печать светлее глазури: тёмное по тёмному не читается
 
 # вордмарк
-text = HEB
+text = HEB[::-1]
 bbox = d.textbbox((0, 0), text, font=heb)
 d.text(((W - (bbox[2] - bbox[0])) / 2 - bbox[0], H * 0.34 - (bbox[3] - bbox[1]) / 2 - bbox[1]),
        text, font=heb, fill=ink + (255,))
 
-# Латинская строка — отдельным слоем со своим зеркалом. Иврит движок
-# раскладывает справа налево сам, латиницу рисуем посимвольно, поэтому
-# общее зеркало холста чинило одну строку и ломало другую.
-lat_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-dl = ImageDraw.Draw(lat_layer)
+# латинская строка вразрядку
 sp = 10
-total = sum(dl.textlength(ch, font=lat) + sp for ch in LAT) - sp
+total = sum(d.textlength(ch, font=lat) + sp for ch in LAT) - sp
 x = (W - total) / 2
 y = H * 0.58
 for ch in LAT:
-    dl.text((x, y), ch, font=lat, fill=ink + (215,))
-    x += dl.textlength(ch, font=lat) + sp
-lat_layer = lat_layer.transpose(Image.FLIP_LEFT_RIGHT)
-img.alpha_composite(lat_layer)
+    d.text((x, y), ch, font=lat, fill=ink + (215,))
+    x += d.textlength(ch, font=lat) + sp
 
 # выедание обжигом: рваная альфа вместо ровной заливки
 random.seed(7)
@@ -64,6 +59,11 @@ for j in range(H):
             k = nl[i, j] / 255.0
             eaten = 0.5 + 0.5 * min(1.0, max(0.0, (k - 0.32) / 0.3))
             a[i, j] = int(a[i, j] * eaten)
+
+# Материал разворачивает текстуру на стенке — проверено тестовой печатью «R→»,
+# которая без этого зеркала читалась как «Я←». Зеркалим холст целиком,
+# тогда и иврит, и латиница ложатся правильно.
+img = img.transpose(Image.FLIP_LEFT_RIGHT)
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 img.save(OUT)
