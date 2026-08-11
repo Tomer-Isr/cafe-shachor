@@ -136,13 +136,16 @@ saucer = lathe(SAUCER_PROFILE, "Saucer", wobble=0.006)
 # так стык получается настоящим переходом, а не «заклёпкой» поверх
 bpy.ops.mesh.primitive_torus_add(
     major_radius=0.019, minor_radius=0.0052, major_segments=64, minor_segments=20,
-    location=(0.0455, 0, 0.045), rotation=(math.pi / 2, 0, 0),
+    location=(-0.0455, 0, 0.045), rotation=(math.pi / 2, 0, 0),
 )
 handle = bpy.context.object
 handle.name = "Handle"
 handle.scale = (1.0, 1.25, 1.0)
 for p in handle.data.polygons:
     p.use_smooth = True
+
+handle.hide_render = True
+handle.hide_viewport = True
 
 boolean = cup.modifiers.new("join_handle", "BOOLEAN")
 boolean.operation = "UNION"
@@ -292,6 +295,58 @@ micro.inputs["Scale"].default_value = 160.0
 nt.links.new(micro.outputs["Fac"], bump.inputs["Height"])
 nt.links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
 set_input(bsdf, "IOR", 1.48)
+
+# ── печать по боку: бренд в глазури ──────────────────────────────────────────
+# У тела вращения нет развёртки, поэтому UV считаем прямо в нодах: угол вокруг
+# оси даёт U, высота — V. Так печать ложится по окружности без ручного разворота.
+DECAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "decal.png")
+if os.path.exists(DECAL):
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    sep_p = nt.nodes.new("ShaderNodeSeparateXYZ")
+    nt.links.new(tc.outputs["Object"], sep_p.inputs["Vector"])
+
+    ang = nt.nodes.new("ShaderNodeMath")
+    ang.operation = "ARCTAN2"
+    nt.links.new(sep_p.outputs["Y"], ang.inputs[0])
+    nt.links.new(sep_p.outputs["X"], ang.inputs[1])
+    to_u = nt.nodes.new("ShaderNodeMath")
+    to_u.operation = "MULTIPLY_ADD"
+    to_u.inputs[1].default_value = -2.0 / 6.2831853  # печать занимает ~127° окружности
+    to_u.inputs[2].default_value = 0.5  # центр печати на +X, подальше от шва arctan2
+    nt.links.new(ang.outputs[0], to_u.inputs[0])
+
+    # пояс печати: середина стенки, между глиняной каймой и кромкой
+    to_v = nt.nodes.new("ShaderNodeMapRange")
+    to_v.inputs["From Min"].default_value = 0.028
+    to_v.inputs["From Max"].default_value = 0.069
+    nt.links.new(sep_p.outputs["Z"], to_v.inputs["Value"])
+
+    uv = nt.nodes.new("ShaderNodeCombineXYZ")
+    nt.links.new(to_u.outputs[0], uv.inputs["X"])
+    nt.links.new(to_v.outputs["Result"], uv.inputs["Y"])
+
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = bpy.data.images.load(DECAL)
+    tex.extension = "CLIP"
+    tex.interpolation = "Cubic"
+    nt.links.new(uv.outputs["Vector"], tex.inputs["Vector"])
+
+    printed = nt.nodes.new("ShaderNodeMix")
+    printed.data_type = "RGBA"
+    nt.links.new(tex.outputs["Alpha"], printed.inputs["Factor"])
+    nt.links.new(body_mix.outputs[2], printed.inputs[6])
+    nt.links.new(tex.outputs["Color"], printed.inputs[7])
+    nt.links.new(printed.outputs[2], bsdf.inputs["Base Color"])
+
+    # краска матовее глазури — иначе печать бликует как наклейка
+    rough_print = nt.nodes.new("ShaderNodeMix")
+    rough_print.data_type = "FLOAT"
+    rough_print.inputs[3].default_value = 0.55
+    nt.links.new(tex.outputs["Alpha"], rough_print.inputs["Factor"])
+    nt.links.new(rough.outputs[0], rough_print.inputs[2])
+    nt.links.new(rough_print.outputs[0], bsdf.inputs["Roughness"])
+
+cup.rotation_euler[2] = math.radians(-65)
 cup.data.materials.append(mat)
 
 # У блюдца та же глазурь, но без глиняного пояса: маска по высоте сделала бы
@@ -319,7 +374,7 @@ coffee.data.materials.append(mat_c)
 # камень стойки
 mat_s, nt_s, bsdf_s = new_material("Stone")
 set_input(bsdf_s, "Base Color", (0.020, 0.018, 0.016, 1))
-set_input(bsdf_s, "Roughness", 0.22)
+set_input(bsdf_s, "Roughness", 0.42)
 stone_bump = nt_s.nodes.new("ShaderNodeBump")
 stone_bump.inputs["Strength"].default_value = 0.06
 stone_noise = nt_s.nodes.new("ShaderNodeTexNoise")
@@ -373,11 +428,12 @@ wnt.links.new(bg.outputs["Background"], wout.inputs["Surface"])
 bpy.ops.object.light_add(type="AREA", location=(-0.55, -0.75, 0.62))
 win = bpy.context.object
 win.data.shape = "RECTANGLE"
-win.data.size = 0.28
+win.data.size = 0.2
 win.data.size_y = 0.95
-win.data.energy = 26
+win.data.energy = 30
 win.data.color = (1.0, 0.83, 0.62)
 win.rotation_euler = (math.radians(62), 0, math.radians(-36))
+win.visible_camera = False
 
 # слабый холодный отражатель спереди — иначе перед предмета уходит в силуэт
 bpy.ops.object.light_add(type="AREA", location=(0.5, 0.62, 0.3))
@@ -388,6 +444,77 @@ fill_light.data.size_y = 0.5
 fill_light.data.energy = 1.1
 fill_light.data.color = (0.72, 0.79, 0.88)
 fill_light.rotation_euler = (math.radians(74), 0, math.radians(148))
+fill_light.visible_camera = False
+
+
+# ── атмосфера ────────────────────────────────────────────────────────────────
+# Воздух не пустой: тонкая дымка ловит луч из окна и даёт кадру глубину.
+# Плотность намеренно мизерная — нужен намёк на объём, а не туман.
+vol = wnt.nodes.new("ShaderNodeVolumeScatter")
+vol.inputs["Density"].default_value = 0.055
+vol.inputs["Anisotropy"].default_value = 0.35
+vol.inputs["Color"].default_value = (0.85, 0.78, 0.68, 1)
+wnt.links.new(vol.outputs["Volume"], wout.inputs["Volume"])
+
+# Задняя стена далеко: без неё фон — ровный градиент панорамы. Стена почти
+# чёрная и держит одно мягкое световое пятно — фон остаётся пустым под текст.
+bpy.ops.mesh.primitive_plane_add(size=8, location=(0, 1.9, 0))
+back = bpy.context.object
+back.name = "BackWall"
+back.rotation_euler = (math.radians(90), 0, 0)
+mat_b, nt_b, bsdf_b = new_material("Wall")
+set_input(bsdf_b, "Base Color", (0.030, 0.026, 0.022, 1))
+set_input(bsdf_b, "Roughness", 0.92)
+wall_bump = nt_b.nodes.new("ShaderNodeBump")
+wall_bump.inputs["Strength"].default_value = 0.35
+wall_noise = nt_b.nodes.new("ShaderNodeTexNoise")
+wall_noise.inputs["Scale"].default_value = 12.0
+wall_noise.inputs["Detail"].default_value = 6.0
+nt_b.links.new(wall_noise.outputs["Fac"], wall_bump.inputs["Height"])
+nt_b.links.new(wall_bump.outputs["Normal"], bsdf_b.inputs["Normal"])
+back.data.materials.append(mat_b)
+
+# Пар: объём над чашкой, живёт только когда в ней есть горячий кофе.
+if FILL > 0.25:
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, level + 0.075))
+    steam = bpy.context.object
+    steam.name = "Steam"
+    steam.scale = (0.055, 0.055, 0.14)
+    mat_st = bpy.data.materials.new("Steam")
+    mat_st.use_nodes = True
+    nts = mat_st.node_tree
+    for n in list(nts.nodes):
+        nts.nodes.remove(n)
+    out_st = nts.nodes.new("ShaderNodeOutputMaterial")
+    princ = nts.nodes.new("ShaderNodeVolumePrincipled")
+    princ.inputs["Color"].default_value = (0.9, 0.88, 0.85, 1)
+    princ.inputs["Density"].default_value = 0.0
+    # плотность рвётся шумом и тает кверху: ровный столб читается дымовой шашкой
+    nz = nts.nodes.new("ShaderNodeTexNoise")
+    nz.inputs["Scale"].default_value = 9.0
+    nz.inputs["Detail"].default_value = 6.0
+    ramp = nts.nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].position = 0.52
+    ramp.color_ramp.elements[1].position = 0.78
+    nts.links.new(nz.outputs["Fac"], ramp.inputs["Fac"])
+    grad = nts.nodes.new("ShaderNodeTexGradient")
+    grad.gradient_type = "LINEAR"
+    gmap = nts.nodes.new("ShaderNodeMapping")
+    gmap.inputs["Rotation"].default_value = (0, math.radians(-90), 0)
+    gcoord = nts.nodes.new("ShaderNodeTexCoord")
+    nts.links.new(gcoord.outputs["Object"], gmap.inputs["Vector"])
+    nts.links.new(gmap.outputs["Vector"], grad.inputs["Vector"])
+    fade = nts.nodes.new("ShaderNodeMath")
+    fade.operation = "MULTIPLY"
+    nts.links.new(ramp.outputs["Color"], fade.inputs[0])
+    nts.links.new(grad.outputs["Fac"], fade.inputs[1])
+    dens = nts.nodes.new("ShaderNodeMath")
+    dens.operation = "MULTIPLY"
+    dens.inputs[1].default_value = 2.6 * min(1.0, (FILL - 0.25) / 0.4)
+    nts.links.new(fade.outputs[0], dens.inputs[0])
+    nts.links.new(dens.outputs[0], princ.inputs["Density"])
+    nts.links.new(princ.outputs["Volume"], out_st.inputs["Volume"])
+    steam.data.materials.append(mat_st)
 
 # ── камера ───────────────────────────────────────────────────────────────────
 # дистанция в метрах: от общего плана к макро над кромкой
@@ -401,8 +528,11 @@ cam = bpy.context.object
 scene.camera = cam
 cam.data.lens = 68
 cam.data.sensor_width = 36
+# сдвиг кадра вместо доворота: перспектива предмета не искажается,
+# а справа освобождается место под текст
+cam.data.shift_x = 0.16
 cam.data.dof.use_dof = True
-cam.data.dof.aperture_fstop = 2.4
+cam.data.dof.aperture_fstop = 5.0
 
 target = bpy.data.objects.new("Target", None)
 bpy.context.collection.objects.link(target)
