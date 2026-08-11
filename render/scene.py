@@ -34,6 +34,13 @@ RES_Y = int(arg("--ry", "900"))
 HDRI = arg("--hdri", "D:/Claude/projects/cafe-shachor/public/hdri/vault_1k.hdr")
 DEVICE = arg("--device", "auto")  # auto | cpu | optix | cuda
 
+# Свет вынесен в аргументы: у чёрной глазури форма читается отражениями, а не
+# заливкой, и нужный баланс подбирается прогонами, а не рассуждением.
+KEY = float(arg("--key", "5"))            # окно на восток, основной
+RIM = float(arg("--rim", "400"))          # узкий контровой стрип: рисует силуэт
+FILL_LIGHT = float(arg("--fill", "0.6"))  # холодный подсвет спереди
+EXPOSURE = float(arg("--exposure", "-0.40"))
+
 clamp = lambda v, a, b: max(a, min(b, v))
 lerp = lambda a, b, t: a + (b - a) * t
 
@@ -287,8 +294,11 @@ speck = nt.nodes.new("ShaderNodeTexNoise")
 speck.inputs["Scale"].default_value = 420.0
 speck.inputs["Detail"].default_value = 1.0
 speck_ramp = nt.nodes.new("ShaderNodeValToRGB")
-speck_ramp.color_ramp.elements[0].position = 0.62
-speck_ramp.color_ramp.elements[1].position = 0.72
+# Порог держим высоко: шум распределён вокруг 0.5, и рамп 0.62–0.72 отсекал
+# больше половины поверхности — «крап» становился сплошной светлой краской и
+# перекрашивал чёрную глазурь в шоколад. Крапин должно быть мало.
+speck_ramp.color_ramp.elements[0].position = 0.80
+speck_ramp.color_ramp.elements[1].position = 0.88
 nt.links.new(speck.outputs["Fac"], speck_ramp.inputs["Fac"])
 
 glaze_speck = nt.nodes.new("ShaderNodeMix")
@@ -297,7 +307,7 @@ glaze_speck.inputs["Factor"].default_value = 0.5
 nt.links.new(speck_ramp.outputs["Color"], glaze_speck.inputs["Factor"])
 nt.links.new(glaze_col.outputs[0], glaze_speck.inputs[6])
 crumb = nt.nodes.new("ShaderNodeRGB")
-crumb.outputs[0].default_value = (0.20, 0.17, 0.14, 1)
+crumb.outputs[0].default_value = (0.085, 0.072, 0.060, 1)
 nt.links.new(crumb.outputs[0], glaze_speck.inputs[7])
 
 body_mix = nt.nodes.new("ShaderNodeMix")
@@ -479,7 +489,7 @@ win = bpy.context.object
 win.data.shape = "RECTANGLE"
 win.data.size = 0.2
 win.data.size_y = 0.95
-win.data.energy = 30
+win.data.energy = KEY
 win.data.color = (1.0, 0.83, 0.62)
 win.rotation_euler = (math.radians(62), 0, math.radians(-36))
 win.visible_camera = False
@@ -490,10 +500,47 @@ fill_light = bpy.context.object
 fill_light.data.shape = "RECTANGLE"
 fill_light.data.size = 0.7
 fill_light.data.size_y = 0.5
-fill_light.data.energy = 1.1
+fill_light.data.energy = FILL_LIGHT
 fill_light.data.color = (0.72, 0.79, 0.88)
 fill_light.rotation_euler = (math.radians(74), 0, math.radians(148))
 fill_light.visible_camera = False
+
+# Контровой стрип сзади-справа. Главный инструмент для чёрной глазури: она
+# зеркальна, поэтому узкий яркий источник не заливает предмет, а рисует по нему
+# вертикальный блик — кромка, изгиб стенки и ручка отделяются от тёмного фона.
+# Заливающий свет здесь противопоказан: он делает из чёрной керамики шоколад.
+if RIM > 0:
+    bpy.ops.object.light_add(type="AREA", location=(0.34, 0.30, 0.26))
+    rim = bpy.context.object
+    rim.data.shape = "RECTANGLE"
+    rim.data.size = 0.03      # узкий: широкий источник даст пятно, а не линию
+    rim.data.size_y = 0.42
+    rim.data.energy = RIM
+    rim.data.color = (1.0, 0.92, 0.80)
+    rim.rotation_euler = (math.radians(74), 0, math.radians(132))
+    rim.visible_camera = False
+    # Ключевой момент: стрип светит ТОЛЬКО в зеркальную составляющую. В диффуз он
+    # не бьёт (иначе снова красит чёрную глазурь в шоколад), в объём не бьёт
+    # (иначе дымка вспыхивает молоком и съедает тёмный фон). Так он существует
+    # в кадре исключительно как отражение — ровно как настоящий софтбокс-стрип,
+    # поставленный «в блик», а не «на предмет».
+    # NB: diffuse_factor/volume_factor на данных лампы — это Eevee, Cycles их не
+    # смотрит. Видимость по типам лучей здесь задаётся на объекте.
+    rim.visible_diffuse = False
+    rim.visible_volume_scatter = False
+
+    # Стрип светит только на посуду. Иначе он бьёт зеркальным бликом в камень
+    # стойки и выжигает половину кадра белой заплатой: источник, достаточно
+    # яркий для отражения в глазури, для полированного камня уже перебор.
+    try:
+        receivers = bpy.data.collections.new("rim_receivers")
+        for o in (cup, saucer):
+            receivers.objects.link(o)
+        rim.light_linking.receiver_collection = receivers
+    except (AttributeError, TypeError) as e:  # noqa: BLE001
+        # На всякий случай: без привязки стрип придётся держать слабым.
+        print(f"[scene] light linking недоступен ({e}) — понижаю контровой")
+        rim.data.energy = min(RIM, 40)
 
 
 # ── атмосфера ────────────────────────────────────────────────────────────────
@@ -615,7 +662,7 @@ scene.render.resolution_y = RES_Y
 scene.render.film_transparent = False
 scene.view_settings.view_transform = "AgX"
 scene.view_settings.look = "AgX - Base Contrast"
-scene.view_settings.exposure = -0.55
+scene.view_settings.exposure = EXPOSURE
 
 prefs = bpy.context.preferences.addons["cycles"].preferences
 # GTX 1650 + Blender 5.2: CUDA-ядро на этой машине не грузится («Invalid kernel

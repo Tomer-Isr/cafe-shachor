@@ -5,10 +5,15 @@
 отлично, поэтому качество можно держать высоким.
 
   python render/pack_frames.py D:/tmp/cafe-seq 1100
+
+Пост-обработки здесь нет намеренно. Раньше поверх кадра ложились зерно
+(случайный шум в трети разрешения, растянутый обратно — пятна 3×3 пикселя)
+и glow-пас, а webp жался в q82. На почти чёрном градиенте это давало ровно
+ту грязь, которую Томер увидел как «шероховатое изображение». Чем сцена
+темнее, тем меньше она прощает: картинку теперь везём из Cycles как есть.
 """
 import os, sys, glob
-from PIL import Image, ImageChops, ImageFilter
-import random
+from PIL import Image
 
 SRC = sys.argv[1] if len(sys.argv) > 1 else "D:/tmp/cafe-seq"
 WIDTH = int(sys.argv[2]) if len(sys.argv) > 2 else 1100
@@ -23,24 +28,12 @@ if not files:
 total = 0
 for i, f in enumerate(files):
     im = Image.open(f).convert("RGB")
-
-    # Плёночное свечение: размытая копия ярких мест, наложенная поверх.
-    # Блик на кромке и струя начинают «дышать», как на настоящей оптике.
-    glow = im.point(lambda v: max(0, v - 168) * 3)
-    glow = glow.filter(ImageFilter.GaussianBlur(14))
-    im = ImageChops.screen(im, glow.point(lambda v: int(v * 0.42)))
-
-    # Зерно: ровная цифровая гладь читается как рендер. Шум привязан к номеру
-    # кадра, поэтому не «кипит» между соседними кадрами сильнее, чем нужно.
-    rnd = random.Random(1000 + i)
-    noise = Image.new("L", (im.width // 3, im.height // 3))
-    noise.putdata([rnd.randint(116, 140) for _ in range(noise.width * noise.height)])
-    noise = noise.resize(im.size, Image.BILINEAR)
-    im = ImageChops.overlay(im, Image.merge("RGB", (noise, noise, noise)))
     if im.width != WIDTH:
         im = im.resize((WIDTH, round(im.height * WIDTH / im.width)), Image.LANCZOS)
     out = os.path.join(DST, f"frame-{i:03d}.webp")
-    im.save(out, "WEBP", quality=82, method=6)
+    # q92: тёмный плавный градиент — худший случай для webp, на q82 он
+    # рассыпается ступеньками и блоками. Кадр всё равно остаётся лёгким.
+    im.save(out, "WEBP", quality=92, method=6)
     total += os.path.getsize(out)
 
 print(f"{len(files)} кадров, {total // 1024} КБ всего, {total // 1024 // len(files)} КБ на кадр")
