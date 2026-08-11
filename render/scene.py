@@ -45,7 +45,7 @@ def smoothstep(e0, e1, x):
 
 # фазы хореографии
 APPROACH = smoothstep(0.16, 0.44, PHASE)
-POUR = clamp((PHASE - 0.44) / 0.3, 0.0, 1.0)
+POUR = clamp((PHASE - 0.26) / 0.42, 0.0, 1.0)
 TOP = smoothstep(0.74, 1.0, PHASE)
 FILL = smoothstep(0.0, 1.0, POUR)
 FLOW = min(clamp(POUR / 0.12, 0, 1), clamp((1 - POUR) / 0.16, 0, 1))
@@ -346,7 +346,7 @@ if os.path.exists(DECAL):
     nt.links.new(rough.outputs[0], rough_print.inputs[2])
     nt.links.new(rough_print.outputs[0], bsdf.inputs["Roughness"])
 
-cup.rotation_euler[2] = math.radians(-65)
+cup.rotation_euler[2] = math.radians(-97)
 cup.data.materials.append(mat)
 
 # У блюдца та же глазурь, но без глиняного пояса: маска по высоте сделала бы
@@ -411,7 +411,7 @@ for n in list(wnt.nodes):
     wnt.nodes.remove(n)
 wout = wnt.nodes.new("ShaderNodeOutputWorld")
 bg = wnt.nodes.new("ShaderNodeBackground")
-bg.inputs["Strength"].default_value = 0.38
+bg.inputs["Strength"].default_value = 0.3
 env = wnt.nodes.new("ShaderNodeTexEnvironment")
 if os.path.exists(HDRI):
     env.image = bpy.data.images.load(HDRI)
@@ -517,22 +517,34 @@ if FILL > 0.25:
     steam.data.materials.append(mat_st)
 
 # ── камера ───────────────────────────────────────────────────────────────────
-# дистанция в метрах: от общего плана к макро над кромкой
-dist = lerp(0.80, 0.44, APPROACH) + POUR * 0.06 - TOP * 0.10
-cam_z = lerp(0.085, 0.125, APPROACH) + TOP * 0.20
-look_z = lerp(0.038, 0.045, APPROACH) - TOP * 0.005
-side = lerp(0.05, 0.075, APPROACH) * (1 - TOP * 0.8)
+# Кинематографичный проход: камера обходит предмет по дуге, одновременно
+# опускаясь к столу и приближаясь. Это «долли вокруг» — приём, который читается
+# дорого именно потому, что меняются сразу три вещи: угол, дистанция и высота.
+#
+# Диафрагма открывается по ходу: на общем плане резко всё, к финалу фон
+# распадается в боке. Так объектив ведёт себя в реальной съёмке.
+AZ_START, AZ_END = math.radians(-46), math.radians(28)
+azimuth = AZ_START + (AZ_END - AZ_START) * smoothstep(0.0, 1.0, PHASE)
 
-bpy.ops.object.camera_add(location=(side, -dist, cam_z))
+# дистанция падает не линейно: сближение ускоряется к наливу и замирает в финале
+dist = lerp(0.86, 0.355, smoothstep(0.05, 0.82, PHASE))
+# высота: от уровня стойки вниз к «глазам гостя», в самом конце — над кромкой
+cam_z = lerp(0.115, 0.055, smoothstep(0.0, 0.5, PHASE)) + TOP * 0.29
+look_z = lerp(0.040, 0.052, APPROACH) - TOP * 0.012
+
+cam_x = math.sin(azimuth) * dist
+cam_y = -math.cos(azimuth) * dist
+
+bpy.ops.object.camera_add(location=(cam_x, cam_y, cam_z))
 cam = bpy.context.object
 scene.camera = cam
-cam.data.lens = 68
+cam.data.lens = lerp(52, 85, smoothstep(0.2, 0.9, PHASE))
 cam.data.sensor_width = 36
 # сдвиг кадра вместо доворота: перспектива предмета не искажается,
-# а справа освобождается место под текст
+# а сбоку освобождается место под текст
 cam.data.shift_x = 0.16
 cam.data.dof.use_dof = True
-cam.data.dof.aperture_fstop = 5.0
+cam.data.dof.aperture_fstop = lerp(6.0, 2.6, smoothstep(0.25, 0.95, PHASE))
 
 target = bpy.data.objects.new("Target", None)
 bpy.context.collection.objects.link(target)

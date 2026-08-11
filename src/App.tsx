@@ -6,7 +6,7 @@ import { Film } from './film/Film'
  * Первый экран — скролл-плёнка: кадры, отрендеренные в Cycles, крутятся прокруткой.
  * Контента на странице пока нет намеренно: сначала должен держать кадр.
  */
-const FRAME_COUNT = 36
+const FRAME_COUNT = 72
 const SCROLL_SCREENS = 5
 
 const prefersReducedMotion = () =>
