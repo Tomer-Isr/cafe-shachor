@@ -64,7 +64,9 @@ export default function App() {
         className="pointer-events-none fixed inset-0 flex items-center px-[7vw]"
         style={{ opacity: titleOpacity, transition: 'opacity 140ms linear' }}
       >
-        <div className="ms-auto max-w-[36ch] text-end">
+        {/* Предмет в кадре всегда слева, поэтому титул прижимаем физически вправо —
+            логическое ms-auto в иврите уводило его на ту же сторону, что и чашку. */}
+        <div className="max-w-[36ch]" style={{ marginLeft: 'auto', textAlign: t.dir === 'rtl' ? 'right' : 'left' }}>
           <h1 className="text-[clamp(2.6rem,8vw,6rem)] leading-[0.95] text-[#efe7db]" style={{ fontFamily: 'var(--font-display)' }}>
             {t.brand}
           </h1>

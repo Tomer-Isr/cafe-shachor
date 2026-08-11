@@ -29,4 +29,4 @@ for i, f in enumerate(files):
     total += os.path.getsize(out)
 
 print(f"{len(files)} кадров, {total // 1024} КБ всего, {total // 1024 // len(files)} КБ на кадр")
-print("→", os.path.normpath(DST))
+print("saved to", os.path.normpath(DST))
