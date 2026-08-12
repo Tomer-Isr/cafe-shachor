@@ -51,6 +51,129 @@ def smoothstep(e0, e1, x):
     return t * t * (3 - 2 * t)
 
 
+# ── камера: пять блоков, четыре перехода ─────────────────────────────────────
+# Раньше здесь был один равномерный проезд от общего плана к макро — прокрутка
+# читалась перемоткой, а не рассказом («анимация бессмысленная», вердикт Томера).
+#
+# Теперь плёнка собрана как раскадровка (docs/STORYBOARD.md): внутри блока
+# камера почти стоит и лишь чуть дрейфует, а между блоками быстро перебрасывает
+# взгляд. Стоячий кадр не значит застывший: в блоке живут свет, пар и жидкость,
+# поэтому кадры всё равно все разные.
+#
+# Каждое состояние: (позиция камеры, точка взгляда, фокусное, диафрагма, сдвиг).
+SHOTS = [
+    # 01 «Окно на восток» — общий план стойки, чашка ещё пустая
+    (dict(cam=(-0.42, -0.62, 0.150), look=(0, 0, 0.045), lens=50, fstop=8.0, shift=0.17),
+     dict(cam=(-0.37, -0.57, 0.142), look=(0, 0, 0.045), lens=50, fstop=8.0, shift=0.17)),
+    # 02 «Зерно» — макро россыпи, чашка размытым пятном позади
+    (dict(cam=(0.015, -0.305, 0.078), look=(0.105, -0.028, 0.004), lens=85, fstop=5.6, shift=0.06),
+     dict(cam=(0.055, -0.280, 0.062), look=(0.105, -0.028, 0.004), lens=85, fstop=5.6, shift=0.06)),
+    # 03 «Налив» — камера чуть выше кромки, чтобы в кадр попала поверхность.
+    # С уровня стойки (первая версия, cam z = 0.108) виден только бок чашки и
+    # палка струи: корона, всплеск и волны остаются за краем — блок про налив
+    # налива не показывал.
+    (dict(cam=(-0.092, -0.268, 0.196), look=(0, 0, 0.058), lens=62, fstop=4.5, shift=0.13),
+     dict(cam=(-0.074, -0.244, 0.186), look=(0, 0, 0.060), lens=62, fstop=4.5, shift=0.13)),
+    # 04 «Чёрное зеркало» — взгляд внутрь, поверхность на весь кадр
+    (dict(cam=(0.042, -0.118, 0.188), look=(0, 0, 0.066), lens=70, fstop=6.0, shift=0.03),
+     dict(cam=(0.028, -0.102, 0.179), look=(0, 0, 0.066), lens=70, fstop=6.0, shift=0.03)),
+    # 05 «Готово» — отступ; чашка уходит вбок, освобождая место под контент
+    (dict(cam=(-0.155, -0.395, 0.112), look=(0, 0, 0.046), lens=55, fstop=5.0, shift=0.26),
+     dict(cam=(-0.200, -0.455, 0.122), look=(0, 0, 0.046), lens=55, fstop=5.0, shift=0.30)),
+]
+
+# Доля прокрутки на блок и на переход. Кадры разложены по прокрутке равномерно,
+# а движение камеры — нет: в блоке она почти стоит, в переходе перебрасывается
+# далеко. При коротком переходе (0.068) бросок укладывался в шесть кадров и
+# читался рывком — «где-то быстрее, где-то медленнее». Переход удлинён почти
+# до длины блока: та же дистанция теперь размазана вдвое мягче.
+BLOCK, TRANS = 0.115, 0.105
+
+
+def smootherstep(x):
+    """Разгон и торможение без излома.
+
+    У обычного smoothstep на концах обнуляется только скорость, а ускорение
+    прыгает — глаз ловит это как толчок в начале и в конце броска. Здесь
+    нулевые и первая, и вторая производные, поэтому переход втекает в стоячий
+    кадр незаметно.
+    """
+    t = clamp(x, 0.0, 1.0)
+    return t * t * t * (t * (t * 6 - 15) + 10)
+
+
+def choreography(p):
+    """Состояние камеры на прокрутке p: внутри блока — дрейф, между — бросок."""
+    span = BLOCK + TRANS
+    for i, (a, b) in enumerate(SHOTS):
+        start = i * span
+        if p < start + BLOCK or i == len(SHOTS) - 1:
+            t = clamp((p - start) / BLOCK, 0.0, 1.0)
+            return a, b, t          # дрейф внутри блока: линейно и еле-еле
+        if p < start + span:
+            t = smootherstep((p - start - BLOCK) / TRANS)
+            return b, SHOTS[i + 1][0], t   # бросок к следующему блоку
+    return SHOTS[-1][0], SHOTS[-1][1], 1.0
+
+
+
+def _phase_remap_table(samples=600):
+    """Пересчёт прокрутки в фазу так, чтобы движение шло ровно.
+
+    Кадры разложены по прокрутке равномерно, а хореография — нет: в блоке
+    камера почти стоит, в переходе перебрасывается далеко. Из-за этого за
+    один и тот же поворот колеса картинка то еле ползёт, то прыгает
+    (замечание Томера про скорость).
+
+    Считаем, сколько «видимого движения» приходится на каждый участок фазы,
+    и раздаём кадры пропорционально пути, а не времени. Выравниваем не до
+    конца: при полном выравнивании стоячие кадры перестают быть стоячими и
+    раскадровка рассыпается обратно в равномерный проезд.
+    """
+    def state(p):
+        f, t, tt = choreography(p)
+        cam = tuple(lerp(f["cam"][j], t["cam"][j], tt) for j in range(3))
+        look = tuple(lerp(f["look"][j], t["look"][j], tt) for j in range(3))
+        return cam, look, lerp(f["lens"], t["lens"], tt)
+
+    def dist(a, b):
+        return sum((a[i] - b[i]) ** 2 for i in range(3)) ** 0.5
+
+    def cost(a, b):
+        # точка взгляда весит больше камеры: поворот кадра заметнее проезда
+        return dist(a[0], b[0]) + dist(a[1], b[1]) * 1.4 + abs(a[2] - b[2]) / 60 * 0.35
+
+    xs = [i / samples for i in range(samples + 1)]
+    st = [state(x) for x in xs]
+    cum = [0.0]
+    for i in range(1, samples + 1):
+        cum.append(cum[-1] + cost(st[i - 1], st[i]))
+    return xs, cum, cum[-1]
+
+
+_XS, _CUM, _TOTAL = _phase_remap_table()
+EQUALIZE = float(arg("--equalize", "0.9"))
+
+
+def remap_phase(p):
+    """Прокрутка → фаза. 0 — как было, 1 — полностью ровное движение."""
+    if EQUALIZE <= 0 or _TOTAL <= 0:
+        return p
+    target = p * _TOTAL
+    lo, hi = 0, len(_CUM) - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _CUM[mid] < target:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lerp(p, _XS[lo], EQUALIZE)
+
+
+# Дальше по файлу PHASE — это фаза хореографии, а SCROLL — позиция прокрутки.
+SCROLL = PHASE
+PHASE = remap_phase(SCROLL)
+
 # фазы хореографии
 # Налив привязан к третьему блоку раскадровки (0.432–0.580 прокрутки): начинается
 # на входе в блок и заканчивается к его концу, чтобы в блоке «Чёрное зеркало»
@@ -276,6 +399,104 @@ def coffee_bean(name, seed=0):
         p.use_smooth = True
     return bean
 
+
+# ── следы присутствия ────────────────────────────────────────────────────────
+# Людей в кадре нет намеренно: плохая фигура в 3D читается манекеном и тянет
+# за собой весь кадр. Обжитость даём предметами — вторая чашка, из которой уже
+# пили, питчер и темпер бариста, смятая салфетка. Всё стоит на дальнем плане
+# и живёт в расфокусе: разглядывать эти вещи не нужно, нужно, чтобы зритель
+# почувствовал, что здесь только что кто-то был.
+PROPS = arg("--props", "on") != "off"
+
+if PROPS:
+    # Вторая чашка: та же геометрия, что у героя, но развёрнута иначе и
+    # отодвинута вглубь. Стоит на блюдце, кофе допит не до конца.
+    cup2 = lathe(CUP_PROFILE, "Cup2", wobble=0.010)
+    saucer2 = lathe(SAUCER_PROFILE, "Saucer2", wobble=0.005)
+    for o, pos, rot in (
+        (cup2, (-0.225, 0.205, 0.0), math.radians(58)),
+        (saucer2, (-0.225, 0.205, 0.0), math.radians(-24)),
+    ):
+        o.location = pos
+        o.rotation_euler[2] = rot
+
+    bpy.ops.mesh.primitive_torus_add(
+        major_radius=0.019, minor_radius=0.0052, major_segments=48, minor_segments=16,
+        location=(-0.225 - 0.0455 * math.cos(math.radians(58)),
+                  0.205 - 0.0455 * math.sin(math.radians(58)), 0.045),
+        rotation=(math.pi / 2, 0, math.radians(58)),
+    )
+    handle2 = bpy.context.object
+    handle2.name = "Handle2"
+    handle2.scale = (1.0, 1.25, 1.0)
+    handle2.hide_render = True
+    handle2.hide_viewport = True
+    b2 = cup2.modifiers.new("join_handle", "BOOLEAN")
+    b2.operation = "UNION"
+    b2.object = handle2
+    b2.solver = "EXACT"
+
+    # остаток кофе на дне — гость ушёл, чашку ещё не убрали
+    dregs = coffee_surface(inner_radius(0.019) - 0.0004, 0.019, "Dregs")
+    dregs.location = (-0.225, 0.205, 0.019)
+
+    # Питчер для молока: усечённый конус со сведённым носиком. Металл ловит
+    # окно узким бликом и работает вторым светлым пятном в глубине кадра.
+    bpy.ops.mesh.primitive_cone_add(
+        vertices=64, radius1=0.030, radius2=0.034, depth=0.082,
+        location=(0.255, 0.240, 0.041),
+    )
+    pitcher = bpy.context.object
+    pitcher.name = "Pitcher"
+    for v in pitcher.data.vertices:
+        x, y, z = v.co
+        # Носик: верхний край мягко вытягивается вперёд. Тянуть сильно нельзя —
+        # получается воронка, а не питчер (первая версия давала 3 см вылета).
+        if z > 0.024:
+            pull = max(0.0, (x / 0.034)) ** 3 * 0.014 * ((z - 0.024) / 0.017)
+            v.co = (x + pull, y * (1.0 - 0.35 * pull / 0.014), z + pull * 0.30)
+    for p in pitcher.data.polygons:
+        p.use_smooth = True
+    pitcher.rotation_euler[2] = math.radians(-52)
+
+    # Темпер: диск с рукоятью, лежит рядом
+    bpy.ops.mesh.primitive_cylinder_add(vertices=48, radius=0.029, depth=0.010,
+                                        location=(0.158, 0.148, 0.005))
+    tamp_base = bpy.context.object
+    tamp_base.name = "TamperBase"
+    bpy.ops.mesh.primitive_cone_add(vertices=40, radius1=0.019, radius2=0.026, depth=0.042,
+                                    location=(0.158, 0.148, 0.031))
+    tamp_grip = bpy.context.object
+    tamp_grip.name = "TamperGrip"
+    for o in (tamp_base, tamp_grip):
+        for p in o.data.polygons:
+            p.use_smooth = True
+
+    # Салфетка: тонкая пластина с провисом — ровный прямоугольник читается
+    # бумажкой из принтера, а не тканью, которой пользовались
+    nap = bpy.data.meshes.new("Napkin")
+    nap_obj = bpy.data.objects.new("Napkin", nap)
+    bpy.context.collection.objects.link(nap_obj)
+    bmn = bmesh.new()
+    NN, NS = 14, 0.115
+    grid = []
+    for iy in range(NN):
+        row = []
+        for ix in range(NN):
+            u, v = ix / (NN - 1) - 0.5, iy / (NN - 1) - 0.5
+            fold = 0.0035 * math.sin(u * 7.0 + 1.2) * math.cos(v * 5.0 - 0.4)
+            row.append(bmn.verts.new((u * NS, v * NS, 0.0012 + fold)))
+        grid.append(row)
+    for iy in range(NN - 1):
+        for ix in range(NN - 1):
+            bmn.faces.new((grid[iy][ix], grid[iy][ix + 1], grid[iy + 1][ix + 1], grid[iy + 1][ix]))
+    bmn.normal_update()
+    bmn.to_mesh(nap)
+    bmn.free()
+    for p in nap.polygons:
+        p.use_smooth = True
+    nap_obj.location = (-0.115, 0.165, 0.0)
+    nap_obj.rotation_euler[2] = math.radians(17)
 
 BEAN_SPILL = 26
 beans = []
@@ -545,6 +766,8 @@ SPIN = math.radians(-106)
 LEAN = 0.0
 cup.rotation_euler[2] = SPIN
 cup.rotation_euler[1] = LEAN
+if PROPS:
+    cup2.data.materials.append(mat)
 # при крене ножка ушла бы в блюдце — приподнимаем на высоту касания
 cup.location.z = abs(math.sin(LEAN)) * 0.021
 cup.data.materials.append(mat)
@@ -562,6 +785,8 @@ sa_noise.inputs["Scale"].default_value = 150.0
 nt_sa.links.new(sa_noise.outputs["Fac"], sa_bump.inputs["Height"])
 nt_sa.links.new(sa_bump.outputs["Normal"], bsdf_sa.inputs["Normal"])
 saucer.data.materials.append(mat_sa)
+if PROPS:
+    saucer2.data.materials.append(mat_sa)
 
 # кофе: почти чёрное зеркало, чуть шероховатое — рябь остывающей поверхности
 mat_c, nt_c, bsdf_c = new_material("Coffee")
@@ -580,6 +805,39 @@ ripple_wave.inputs["Distortion"].default_value = 4.0
 nt_c.links.new(ripple_wave.outputs["Fac"], ripple_bump.inputs["Height"])
 nt_c.links.new(ripple_bump.outputs["Normal"], bsdf_c.inputs["Normal"])
 coffee.data.materials.append(mat_c)
+
+if PROPS:
+    dregs.data.materials.append(mat_c)
+
+    # Сталь бариста: питчер и темпер. Отдельно от материала носика, который
+    # живёт только во время налива, — эти предметы стоят на стойке всегда.
+    mat_pm, nt_pm, bsdf_pm = new_material("Barware")
+    set_input(bsdf_pm, "Base Color", (0.52, 0.53, 0.54, 1))
+    set_input(bsdf_pm, "Metallic", 1.0)
+    set_input(bsdf_pm, "Roughness", 0.22)
+    pm_bump = nt_pm.nodes.new("ShaderNodeBump")
+    pm_bump.inputs["Strength"].default_value = 0.06
+    pm_scuff = nt_pm.nodes.new("ShaderNodeTexNoise")
+    pm_scuff.inputs["Scale"].default_value = 240.0   # затёртости от рук
+    nt_pm.links.new(pm_scuff.outputs["Fac"], pm_bump.inputs["Height"])
+    nt_pm.links.new(pm_bump.outputs["Normal"], bsdf_pm.inputs["Normal"])
+    for o in (pitcher, tamp_base, tamp_grip):
+        o.data.materials.append(mat_pm)
+
+    # Бумага салфетки: почти не блестит, чуть просвечивает на просвет
+    mat_np, nt_np, bsdf_np = new_material("Napkin")
+    # Крафтовая салфетка, не офисный лист: светлая бумага в тёмном кадре
+    # мгновенно перетягивает взгляд на себя.
+    set_input(bsdf_np, "Base Color", (0.115, 0.098, 0.078, 1))
+    set_input(bsdf_np, "Roughness", 0.96)
+    set_input(bsdf_np, "Specular IOR Level", 0.18)
+    np_bump = nt_np.nodes.new("ShaderNodeBump")
+    np_bump.inputs["Strength"].default_value = 0.28
+    np_fiber = nt_np.nodes.new("ShaderNodeTexNoise")
+    np_fiber.inputs["Scale"].default_value = 380.0
+    nt_np.links.new(np_fiber.outputs["Fac"], np_bump.inputs["Height"])
+    nt_np.links.new(np_bump.outputs["Normal"], bsdf_np.inputs["Normal"])
+    nap_obj.data.materials.append(mat_np)
 
 # камень стойки
 mat_s, nt_s, bsdf_s = new_material("Stone")
@@ -740,7 +998,12 @@ if RIM > 0:
     # превращая тёмную обжарку в белые камушки (проверено кадром).
     try:
         receivers = bpy.data.collections.new("rim_receivers")
-        for o in (cup, saucer):
+        # Питчер и вторая чашка тоже в приёмниках: без блика металл в тёмной
+        # сцене отражает одну темноту и превращается в чёрный силуэт.
+        lit = [cup, saucer]
+        if PROPS:
+            lit += [cup2, saucer2, pitcher, tamp_base, tamp_grip]
+        for o in lit:
             receivers.objects.link(o)
         rim.light_linking.receiver_collection = receivers
     except (AttributeError, TypeError) as e:  # noqa: BLE001
@@ -783,21 +1046,63 @@ vol.inputs["Anisotropy"].default_value = 0.35
 vol.inputs["Color"].default_value = (0.85, 0.78, 0.68, 1)
 wnt.links.new(vol.outputs["Volume"], wout.inputs["Volume"])
 
-# Задняя стена далеко: без неё фон — ровный градиент панорамы. Стена почти
-# чёрная и держит одно мягкое световое пятно — фон остаётся пустым под текст.
-bpy.ops.mesh.primitive_plane_add(size=8, location=(0, 1.9, 0))
+# Стена за стойкой — кладка из иерусалимского камня (легенда бренда: первый
+# этаж дома 1920-х). Стену придвинули с 1.9 м до 0.62: на прежнем расстоянии
+# она была вне глубины резкости и работала просто тёмным фоном, а нужен
+# читаемый ряд блоков в мягком расфокусе — он и делает из пустоты помещение.
+bpy.ops.mesh.primitive_plane_add(size=4, location=(0, 0.62, 0))
 back = bpy.context.object
 back.name = "BackWall"
 back.rotation_euler = (math.radians(90), 0, 0)
 mat_b, nt_b, bsdf_b = new_material("Wall")
-set_input(bsdf_b, "Base Color", (0.030, 0.026, 0.022, 1))
-set_input(bsdf_b, "Roughness", 0.92)
+set_input(bsdf_b, "Roughness", 0.94)
+
+# Кладка: кирпичная текстура даёт и цвет блоков, и швы между ними. Камень
+# тёплый, но держим его тёмным — светлая стена спорит с чёрной посудой.
+brick = nt_b.nodes.new("ShaderNodeTexBrick")
+brick.inputs["Color1"].default_value = (0.150, 0.122, 0.093, 1)
+brick.inputs["Color2"].default_value = (0.115, 0.093, 0.070, 1)
+brick.inputs["Mortar"].default_value = (0.052, 0.044, 0.035, 1)
+brick.inputs["Scale"].default_value = 1.45
+brick.inputs["Mortar Size"].default_value = 0.013
+brick.inputs["Mortar Smooth"].default_value = 0.35
+brick.inputs["Bias"].default_value = -0.10
+brick.inputs["Brick Width"].default_value = 0.62      # блок вытянут по горизонтали
+brick.inputs["Row Height"].default_value = 0.26
+brick_coord = nt_b.nodes.new("ShaderNodeTexCoord")
+nt_b.links.new(brick_coord.outputs["Object"], brick.inputs["Vector"])
+
+# Пятнистость камня поверх кладки: ровный цвет блока выдаёт процедуру
+stain = nt_b.nodes.new("ShaderNodeTexNoise")
+stain.inputs["Scale"].default_value = 5.5
+stain.inputs["Detail"].default_value = 7.0
+stain_mix = nt_b.nodes.new("ShaderNodeMix")
+stain_mix.data_type = "RGBA"
+stain_mix.inputs["Factor"].default_value = 0.22
+nt_b.links.new(brick.outputs["Color"], stain_mix.inputs[6])
+darker = nt_b.nodes.new("ShaderNodeRGB")
+darker.outputs[0].default_value = (0.042, 0.034, 0.026, 1)
+nt_b.links.new(darker.outputs[0], stain_mix.inputs[7])
+nt_b.links.new(stain.outputs["Fac"], stain_mix.inputs["Factor"])
+nt_b.links.new(stain_mix.outputs[2], bsdf_b.inputs["Base Color"])
+
+# Рельеф: швы утоплены (по маске кладки), поверх — крупная шероховатость камня
 wall_bump = nt_b.nodes.new("ShaderNodeBump")
-wall_bump.inputs["Strength"].default_value = 0.35
+wall_bump.inputs["Strength"].default_value = 0.62
+seam = nt_b.nodes.new("ShaderNodeMix")
+seam.data_type = "FLOAT"
+seam.inputs[2].default_value = 0.0
+seam.inputs[3].default_value = 1.0
+nt_b.links.new(brick.outputs["Fac"], seam.inputs["Factor"])
 wall_noise = nt_b.nodes.new("ShaderNodeTexNoise")
-wall_noise.inputs["Scale"].default_value = 12.0
+wall_noise.inputs["Scale"].default_value = 26.0
 wall_noise.inputs["Detail"].default_value = 6.0
-nt_b.links.new(wall_noise.outputs["Fac"], wall_bump.inputs["Height"])
+rough_stone = nt_b.nodes.new("ShaderNodeMix")
+rough_stone.data_type = "FLOAT"
+rough_stone.inputs["Factor"].default_value = 0.30
+nt_b.links.new(seam.outputs[0], rough_stone.inputs[2])
+nt_b.links.new(wall_noise.outputs["Fac"], rough_stone.inputs[3])
+nt_b.links.new(rough_stone.outputs[0], wall_bump.inputs["Height"])
 nt_b.links.new(wall_bump.outputs["Normal"], bsdf_b.inputs["Normal"])
 back.data.materials.append(mat_b)
 
@@ -843,54 +1148,9 @@ if FILL > 0.25:
     nts.links.new(princ.outputs["Volume"], out_st.inputs["Volume"])
     steam.data.materials.append(mat_st)
 
-# ── камера: пять блоков, четыре перехода ─────────────────────────────────────
-# Раньше здесь был один равномерный проезд от общего плана к макро — прокрутка
-# читалась перемоткой, а не рассказом («анимация бессмысленная», вердикт Томера).
-#
-# Теперь плёнка собрана как раскадровка (docs/STORYBOARD.md): внутри блока
-# камера почти стоит и лишь чуть дрейфует, а между блоками быстро перебрасывает
-# взгляд. Стоячий кадр не значит застывший: в блоке живут свет, пар и жидкость,
-# поэтому кадры всё равно все разные.
-#
-# Каждое состояние: (позиция камеры, точка взгляда, фокусное, диафрагма, сдвиг).
-SHOTS = [
-    # 01 «Окно на восток» — общий план стойки, чашка ещё пустая
-    (dict(cam=(-0.42, -0.62, 0.150), look=(0, 0, 0.045), lens=50, fstop=8.0, shift=0.17),
-     dict(cam=(-0.37, -0.57, 0.142), look=(0, 0, 0.045), lens=50, fstop=8.0, shift=0.17)),
-    # 02 «Зерно» — макро россыпи, чашка размытым пятном позади
-    (dict(cam=(0.015, -0.305, 0.078), look=(0.105, -0.028, 0.004), lens=85, fstop=5.6, shift=0.06),
-     dict(cam=(0.055, -0.280, 0.062), look=(0.105, -0.028, 0.004), lens=85, fstop=5.6, shift=0.06)),
-    # 03 «Налив» — камера чуть выше кромки, чтобы в кадр попала поверхность.
-    # С уровня стойки (первая версия, cam z = 0.108) виден только бок чашки и
-    # палка струи: корона, всплеск и волны остаются за краем — блок про налив
-    # налива не показывал.
-    (dict(cam=(-0.092, -0.268, 0.196), look=(0, 0, 0.058), lens=62, fstop=4.5, shift=0.13),
-     dict(cam=(-0.074, -0.244, 0.186), look=(0, 0, 0.060), lens=62, fstop=4.5, shift=0.13)),
-    # 04 «Чёрное зеркало» — взгляд внутрь, поверхность на весь кадр
-    (dict(cam=(0.042, -0.118, 0.188), look=(0, 0, 0.066), lens=70, fstop=6.0, shift=0.03),
-     dict(cam=(0.028, -0.102, 0.179), look=(0, 0, 0.066), lens=70, fstop=6.0, shift=0.03)),
-    # 05 «Готово» — отступ; чашка уходит вбок, освобождая место под контент
-    (dict(cam=(-0.155, -0.395, 0.112), look=(0, 0, 0.046), lens=55, fstop=5.0, shift=0.26),
-     dict(cam=(-0.200, -0.455, 0.122), look=(0, 0, 0.046), lens=55, fstop=5.0, shift=0.30)),
-]
-
-BLOCK, TRANS = 0.148, 0.068
-
-
-def choreography(p):
-    """Состояние камеры на прокрутке p: внутри блока — дрейф, между — бросок."""
-    span = BLOCK + TRANS
-    for i, (a, b) in enumerate(SHOTS):
-        start = i * span
-        if p < start + BLOCK or i == len(SHOTS) - 1:
-            t = clamp((p - start) / BLOCK, 0.0, 1.0)
-            return a, b, t          # дрейф внутри блока: линейно и еле-еле
-        if p < start + span:
-            t = smoothstep(0.0, 1.0, (p - start - BLOCK) / TRANS)
-            return b, SHOTS[i + 1][0], t   # бросок к следующему блоку
-    return SHOTS[-1][0], SHOTS[-1][1], 1.0
-
-
+# ── камера ──────────────────────────────────────────────────────────────────
+# Раскадровка и хореография объявлены в начале файла: по ним же считается
+# пересчёт прокрутки в фазу, а он нужен раньше, чем строится геометрия.
 frm, to, tt = choreography(PHASE)
 mix3 = lambda k: tuple(lerp(frm[k][j], to[k][j], tt) for j in range(3))
 cam_pos = mix3("cam")
@@ -983,6 +1243,6 @@ pick_device()
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 scene.render.filepath = OUT
 scene.render.image_settings.file_format = "PNG"
-print(f"[scene] phase={PHASE} fill={FILL:.2f} flow={FLOW:.2f}")
+print(f"[scene] scroll={SCROLL:.4f} phase={PHASE:.4f} fill={FILL:.2f} flow={FLOW:.2f}")
 bpy.ops.render.render(write_still=True)
 print(f"[scene] saved {OUT}")
