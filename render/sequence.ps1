@@ -29,9 +29,16 @@ for ($i = 0; $i -lt $Frames; $i++) {
     if (Test-Path $file) { continue }
 
     $phase = [math]::Round($i / ($Frames - 1), 4)
-    & $Blender -b -P render\scene.py -- `
-        --phase $phase --device cpu --out $file `
-        --samples $Samples --rx $RX --ry $RY | Out-Null
+    # Пониженный приоритет: на шести ядрах рендер съедает машину целиком и
+    # работать за ней становится невозможно. Свободные ядра Blender всё равно
+    # заберёт — теряется только время, когда за компьютером реально работают.
+    $proc = Start-Process -FilePath $Blender -PassThru -NoNewWindow -Wait:$false -ArgumentList @(
+        '-b', '-P', 'render\scene.py', '--',
+        '--phase', $phase, '--device', 'cpu', '--out', $file,
+        '--samples', $Samples, '--rx', $RX, '--ry', $RY
+    )
+    try { $proc.PriorityClass = 'BelowNormal' } catch { }
+    $proc.WaitForExit()
 
     "$(Get-Date -Format 'HH:mm:ss')  frame $num  phase $phase" |
         Add-Content -Path (Join-Path $Out "progress.log") -Encoding utf8
