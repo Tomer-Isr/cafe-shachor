@@ -1,7 +1,7 @@
 // Тексты. HE — основной язык витрины, RU — для ревью и русскоязычных гостей.
 // Тон: короткие утвердительные фразы, факты вместо прилагательных.
 
-export type Locale = 'he' | 'ru'
+export type Locale = 'he' | 'ru' | 'en'
 
 export const CATEGORY_LABELS: Record<Locale, Record<string, string>> = {
   he: {
@@ -11,6 +11,10 @@ export const CATEGORY_LABELS: Record<Locale, Record<string, string>> = {
   ru: {
     espresso: 'Эспрессо', filter: 'Фильтр', cold: 'Холодное', nocoffee: 'Не кофе',
     food: 'Еда', sweet: 'Сладкое', beans: 'Зерно домой',
+  },
+  en: {
+    espresso: 'Espresso', filter: 'Filter', cold: 'Cold', nocoffee: 'Not coffee',
+    food: 'Food', sweet: 'Sweet', beans: 'Beans to go',
   },
 }
 
@@ -160,5 +164,58 @@ export const COPY: Record<Locale, Copy> = {
     tweaks: 'Настройки',
     pause: 'Остановить движение',
     play: 'Включить движение',
+  },
+  en: {
+    dir: 'ltr',
+    brand: 'Shachor',
+    heroLine: 'Coffee, nothing extra',
+    heroFact: 'Jaffa · roasted here on Tuesdays',
+    heroHint: 'scroll',
+    ctaMenu: 'Menu',
+    ctaBook: 'Book a table',
+    cursorHint: 'Move the cursor — the steam pulls away',
+    actTwoTitle: 'What the cup says',
+    actTwoText:
+      'We roast here every Tuesday on a 5 kg roaster. No syrups, no sizes, two kinds of milk. ' +
+      'Bring your own cup and pay 2 ₪ less.',
+    actThreeTitle: 'Then we pour',
+    actThreeText: 'Espresso in the right volume. We never ask about sugar — it lives on the bar.',
+    ticker: [
+      'This week: Ethiopia · Guji · natural',
+      'Roasting every Tuesday',
+      'Your own cup — 2 ₪ off',
+      'Shakshuka on Fridays',
+      'Sun–Thu 07:00–19:00 · Fri until 15:00',
+    ],
+    beanTitle: 'Bean of the week',
+    beanRoasted: 'roasted',
+    menuTitle: 'The menu is short on purpose',
+    menuNote: 'Two kinds of milk, no syrups, no sizes. Sugar is on the bar.',
+    menuAll: 'Full menu',
+    spaceTitle: 'The room',
+    spaceText:
+      'One vaulted room, one window facing east, and a long table everyone shares. ' +
+      'The roaster stands behind the bar — what you drink here was roasted here.',
+    spaceFacts: ['1920s building', 'Shared table for 12', '5 kg roaster', 'Courtyard, 4 tables'],
+    loyaltyTitle: 'Five coffees — the sixth is on us',
+    loyaltyText: 'Brought your own cup? 2 ₪ off. No stickers, no app.',
+    bookTitle: 'Book a table',
+    bookRule: 'Only courtyard tables are bookable. The long table and the bar are first come, first served.',
+    bookHold: 'We hold a table for 15 minutes.',
+    bookCta: 'Message us on WhatsApp',
+    visitTitle: 'Hours and address',
+    visitAddress: '6 HaBurskai Lane, Jaffa',
+    visitPhone: '03-000-0000',
+    hoursRows: [
+      ['Sunday–Thursday', '07:00–19:00'],
+      ['Friday', '07:00–15:00'],
+      ['Saturday', 'closed'],
+    ],
+    kosherOn: 'The kitchen is not kosher',
+    footerDemo: 'Demo concept. The address, phone number and images are not real.',
+    footerBy: 'Built by Tomer Iukhvidov',
+    tweaks: 'Tweaks',
+    pause: 'Pause motion',
+    play: 'Resume motion',
   },
 }

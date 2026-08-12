@@ -80,7 +80,7 @@ export default function App() {
       <main style={{ height: `${SCROLL_SCREENS * 100}svh` }} aria-hidden="true" />
 
       <div className="fixed bottom-4 start-4 flex gap-1 text-xs">
-        {(['he', 'ru'] as Locale[]).map((l) => (
+        {(['he', 'ru', 'en'] as Locale[]).map((l) => (
           <button
             key={l}
             onClick={() => setLocale(l)}
