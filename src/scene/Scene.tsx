@@ -56,7 +56,7 @@ function Counter() {
 }
 
 /** Стена свода за стойкой: далеко, в тумане — даёт сцене помещение, а не пустоту */
-function BackWall() {
+export function BackWall() {
   const { color, roughness } = useMemo(() => {
     const m = stoneMaps(512)
     m.color.repeat.set(6, 2)

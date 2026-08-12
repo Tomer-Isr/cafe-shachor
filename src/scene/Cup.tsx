@@ -31,7 +31,6 @@ const PROFILE: [number, number][] = [
 /** участок внешней стенки, на который ложится печать */
 const DECAL_PROFILE = PROFILE.slice(3, 9)
 
-const RIM_RADIUS = 0.447
 const RIM_HEIGHT = 0.678
 
 interface Props {
@@ -99,11 +98,8 @@ export function Cup({ pointer, paused, scroll, fillRef, flowRef, originRef, land
   }, [])
   const decalMap = useMemo(() => cupDecal(), [])
 
-  const localRim = useMemo(() => new THREE.Vector3(), [])
-
-  useFrame((state, delta) => {
+  useFrame((_state, delta) => {
     if (!group.current) return
-    const t = state.clock.elapsedTime
     const p = pointer.current ?? new THREE.Vector2()
     const s = scroll.current ?? 0
 
