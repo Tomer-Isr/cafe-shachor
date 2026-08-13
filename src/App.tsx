@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { COPY, type Locale } from './content/copy'
 import { Film } from './film/Film'
+import { FilmGL } from './film/FilmGL'
 
 /**
  * Первый экран — скролл-плёнка: кадры, отрендеренные в Cycles, крутятся прокруткой.
@@ -12,9 +13,20 @@ const SCROLL_SCREENS = 5
 const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
+/** Есть ли WebGL2: без него плёнка крутится обычной канвой, без реакции на курсор. */
+const hasWebGL2 = () => {
+  if (typeof document === 'undefined') return false
+  try {
+    return !!document.createElement('canvas').getContext('webgl2')
+  } catch {
+    return false
+  }
+}
+
 export default function App() {
   const [locale, setLocale] = useState<Locale>('he')
   const [paused] = useState(prefersReducedMotion)
+  const [gl, setGl] = useState(hasWebGL2)
   const [progress, setProgress] = useState(0)
 
   const progressRef = useRef(0)
@@ -58,7 +70,12 @@ export default function App() {
 
   return (
     <>
-      <Film count={FRAME_COUNT} progressRef={progressRef} paused={paused} />
+      {gl ? (
+        <FilmGL count={FRAME_COUNT} progressRef={progressRef} paused={paused} still={paused}
+                onFail={() => setGl(false)} />
+      ) : (
+        <Film count={FRAME_COUNT} progressRef={progressRef} paused={paused} />
+      )}
 
       <div
         className="pointer-events-none fixed inset-0 flex items-center px-[7vw]"
@@ -73,6 +90,12 @@ export default function App() {
           <p className="mt-4 text-[clamp(0.95rem,2vw,1.35rem)] text-[#a99f92]" style={{ fontFamily: 'var(--font-body)' }}>
             {t.heroLine}
           </p>
+          {gl && !paused && (
+            <p className="mt-6 text-[0.78rem] uppercase tracking-[0.18em] text-[#6f675d]"
+               style={{ fontFamily: 'var(--font-body)' }}>
+              {t.touchHint}
+            </p>
+          )}
         </div>
       </div>
 

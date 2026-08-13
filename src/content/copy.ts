@@ -27,6 +27,7 @@ export interface Copy {
   ctaMenu: string
   ctaBook: string
   cursorHint: string
+  touchHint: string
   actTwoTitle: string
   actTwoText: string
   actThreeTitle: string
@@ -68,6 +69,7 @@ export const COPY: Record<Locale, Copy> = {
     ctaMenu: 'לתפריט',
     ctaBook: 'להזמנת שולחן',
     cursorHint: 'הזיזו את העכבר — האדים נסוגים',
+    touchHint: 'הקישו על התמונה',
     actTwoTitle: 'מה שכתוב על הכוס',
     actTwoText:
       'קולים כאן, בכל יום שלישי, על רוסטר של 5 ק״ג. בלי סירופים, בלי גדלים, שני סוגי חלב. ' +
@@ -121,6 +123,7 @@ export const COPY: Record<Locale, Copy> = {
     ctaMenu: 'Меню',
     ctaBook: 'Забронировать стол',
     cursorHint: 'Проведите курсором — пар расступается',
+    touchHint: 'нажмите на кадр',
     actTwoTitle: 'Что написано на чашке',
     actTwoText:
       'Жарим здесь, каждый вторник, на ростере 5 кг. Без сиропов, без размеров, два вида молока. ' +
@@ -174,6 +177,7 @@ export const COPY: Record<Locale, Copy> = {
     ctaMenu: 'Menu',
     ctaBook: 'Book a table',
     cursorHint: 'Move the cursor — the steam pulls away',
+    touchHint: 'tap the frame',
     actTwoTitle: 'What the cup says',
     actTwoText:
       'We roast here every Tuesday on a 5 kg roaster. No syrups, no sizes, two kinds of milk. ' +
