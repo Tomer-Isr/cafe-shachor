@@ -237,6 +237,11 @@ export function FilmGL({ count, progressRef, base, paused = false, still = false
 
     const tex = gl.createTexture()
     gl.bindTexture(gl.TEXTURE_2D, tex)
+    // У WebGL начало координат текстуры внизу, у картинки — вверху. Без этого
+    // флага кадр загружается зеркально по вертикали, и вся сцена встаёт вверх
+    // ногами. Координаты ряби при этом уже живут в UV-пространстве (y снизу),
+    // поэтому их пересчитывать не нужно.
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
