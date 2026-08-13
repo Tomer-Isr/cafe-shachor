@@ -16,6 +16,7 @@ param(
     [int]$RX = 1100,
     [int]$RY = 620,
     [int]$Samples = 128,
+    [string]$Device = 'optix',
     [string]$Blender = "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe",
     [string]$Project = "D:\Claude\projects\cafe-shachor"
 )
@@ -34,7 +35,7 @@ for ($i = 0; $i -lt $Frames; $i++) {
     # заберёт — теряется только время, когда за компьютером реально работают.
     $proc = Start-Process -FilePath $Blender -PassThru -NoNewWindow -Wait:$false -ArgumentList @(
         '-b', '-P', 'render\scene.py', '--',
-        '--phase', $phase, '--device', 'cpu', '--out', $file,
+        '--phase', $phase, '--device', $Device, '--out', $file,
         '--samples', $Samples, '--rx', $RX, '--ry', $RY
     )
     try { $proc.PriorityClass = 'BelowNormal' } catch { }
