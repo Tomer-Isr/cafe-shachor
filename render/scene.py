@@ -40,6 +40,7 @@ KEY = float(arg("--key", "5"))            # окно на восток, осно
 RIM = float(arg("--rim", "330"))          # узкий контровой стрип: рисует силуэт
 FILL_LIGHT = float(arg("--fill", "0.6"))  # холодный подсвет спереди
 CEIL = float(arg("--ceil", "1.4"))        # свод: живёт в отражении кофе, не в свете
+LAMP = float(arg("--lamp", "12"))         # тёплая лампа над стойкой
 EXPOSURE = float(arg("--exposure", "-0.22"))
 
 clamp = lambda v, a, b: max(a, min(b, v))
@@ -82,163 +83,97 @@ SHOTS = [
      dict(cam=(-0.200, -0.455, 0.122), look=(0, 0, 0.046), lens=55, fstop=11.0, shift=0.30)),
 ]
 
-# Переходы разной длины — по дистанции, которую в них проходит камера.
+# ── маршрут камеры: одна скорость от начала до конца ─────────────────────────
 #
-# Пока все броски занимали поровну прокрутки, переход «общий план → макро
-# зерна» шёл в восемь раз быстрее соседних блоков: камера пролетает там
-# полметра со сменой объектива, а времени ей отведено столько же, сколько
-# броску на десять сантиметров. Отсюда и «начинается в хорошем темпе, потом
-# резко ускоряется». Теперь длинный переход получает пропорционально больше
-# прокрутки, и все броски идут примерно с одной скоростью.
-BLOCK_SHARE = 0.50   # половина прокрутки отдана стоячим кадрам
+# Раньше здесь было «пауза — бросок — пауза»: камера стояла на блоке и
+# перелетала между ними. Такая структура принципиально не даёт ровного хода,
+# сколько ни выравнивай — на броске всё равно вдвое-втрое быстрее, и прокрутка
+# читается рывками (замечание Томера: «начинается в хорошем темпе, потом резко
+# ускоряется»).
+#
+# Теперь камера едет непрерывно по гладкому маршруту через те же ключевые точки
+# и с постоянной скоростью. Композиции сохранились — камера через них проходит,
+# а не замирает; вместо остановок работает то, что живёт в самой сцене: свет,
+# пар, жидкость.
+KEYS = [s[0] for s in SHOTS]
 
 
-def _shot_gap(a, b):
-    dc = sum((a["cam"][i] - b["cam"][i]) ** 2 for i in range(3)) ** 0.5
-    dl = sum((a["look"][i] - b["look"][i]) ** 2 for i in range(3)) ** 0.5
-    return dc + dl * 1.4 + abs(a["lens"] - b["lens"]) / 60 * 0.35
+def _catmull(p0, p1, p2, p3, t):
+    """Гладкая кривая через точки: маршрут не должен ломаться на углах."""
+    t2, t3 = t * t, t * t * t
+    return tuple(
+        0.5 * ((2 * p1[i])
+               + (-p0[i] + p2[i]) * t
+               + (2 * p0[i] - 5 * p1[i] + 4 * p2[i] - p3[i]) * t2
+               + (-p0[i] + 3 * p1[i] - 3 * p2[i] + p3[i]) * t3)
+        for i in range(len(p1))
+    )
 
 
-_GAPS = [_shot_gap(SHOTS[i][1], SHOTS[i + 1][0]) for i in range(len(SHOTS) - 1)]
-_GSUM = sum(_GAPS) or 1.0
-BLOCK = BLOCK_SHARE / len(SHOTS)
-TRANS = [(1.0 - BLOCK_SHARE) * g / _GSUM for g in _GAPS]
+def _at(u):
+    """Состояние камеры в параметре маршрута u ∈ [0, 1] (ещё не по скорости)."""
+    n = len(KEYS) - 1
+    x = clamp(u, 0.0, 1.0) * n
+    i = min(int(x), n - 1)
+    t = x - i
+    idx = [max(0, i - 1), i, min(i + 1, n), min(i + 2, n)]
 
-# границы участков: [начало блока 0, конец блока 0, начало блока 1, ...]
-_EDGES = []
-_acc = 0.0
-for _i in range(len(SHOTS)):
-    _EDGES.append((_acc, _acc + BLOCK))
-    _acc += BLOCK
-    if _i < len(TRANS):
-        _acc += TRANS[_i]
+    def pick(field, dims):
+        pts = [KEYS[k][field] if dims > 1 else (KEYS[k][field],) for k in idx]
+        return _catmull(pts[0], pts[1], pts[2], pts[3], t)
+
+    cam = pick("cam", 3)
+    look = pick("look", 3)
+    lens = pick("lens", 1)[0]
+    fstop = pick("fstop", 1)[0]
+    shift = pick("shift", 1)[0]
+    return cam, look, lens, fstop, shift
 
 
-def smootherstep(x):
-    """Разгон и торможение без излома.
+def _arc_table(samples=900):
+    """Длина маршрута по параметру — чтобы раздать кадры поровну по пути.
 
-    У обычного smoothstep на концах обнуляется только скорость, а ускорение
-    прыгает — глаз ловит это как толчок в начале и в конце броска. Здесь
-    нулевые и первая, и вторая производные, поэтому переход втекает в стоячий
-    кадр незаметно.
+    Без этого равномерный параметр даёт неравномерную скорость: между близкими
+    ключами камера ползёт, между далёкими летит.
     """
-    t = clamp(x, 0.0, 1.0)
-    return t * t * t * (t * (t * 6 - 15) + 10)
+    us = [i / samples for i in range(samples + 1)]
+    st = [_at(u) for u in us]
 
+    def step(a, b):
+        dc = sum((a[0][i] - b[0][i]) ** 2 for i in range(3)) ** 0.5
+        dl = sum((a[1][i] - b[1][i]) ** 2 for i in range(3)) ** 0.5
+        return dc + dl * 1.4 + abs(a[2] - b[2]) / 60 * 0.35
 
-def glide(x, ramp=0.30):
-    """Разгон → ровный ход → торможение.
-
-    У любой S-кривой скорость в середине почти вдвое выше средней, и на
-    длинном броске эта середина читается пролётом. Здесь скорость выходит
-    на полку и держится: пик всего 1/(1-ramp) от средней вместо 1.9.
-    Это движение операторской тележки, а не маятника.
-    """
-    t = clamp(x, 0.0, 1.0)
-    total = 1.0 - ramp
-    if t < ramp:
-        s = (t * t) / (2 * ramp)
-    elif t < 1.0 - ramp:
-        s = ramp / 2 + (t - ramp)
-    else:
-        y = 1.0 - t
-        s = total - (y * y) / (2 * ramp)
-    return s / total
-
-
-def choreography(p):
-    """Состояние камеры на прокрутке p: внутри блока — дрейф, между — бросок."""
-    for i, (a, b) in enumerate(SHOTS):
-        start, end = _EDGES[i]
-        if p < end or i == len(SHOTS) - 1:
-            t = clamp((p - start) / BLOCK, 0.0, 1.0)
-            return a, b, t          # дрейф внутри блока: линейно и еле-еле
-        if p < _EDGES[i + 1][0]:
-            t = glide((p - end) / TRANS[i])
-            return b, SHOTS[i + 1][0], t   # бросок к следующему блоку
-    return SHOTS[-1][0], SHOTS[-1][1], 1.0
-
-
-
-def _phase_remap_table(samples=600):
-    """Пересчёт прокрутки в фазу так, чтобы движение шло ровно.
-
-    Кадры разложены по прокрутке равномерно, а хореография — нет: в блоке
-    камера почти стоит, в переходе перебрасывается далеко. Из-за этого за
-    один и тот же поворот колеса картинка то еле ползёт, то прыгает
-    (замечание Томера про скорость).
-
-    Считаем, сколько «видимого движения» приходится на каждый участок фазы,
-    и раздаём кадры пропорционально пути, а не времени. Выравниваем не до
-    конца: при полном выравнивании стоячие кадры перестают быть стоячими и
-    раскадровка рассыпается обратно в равномерный проезд.
-    """
-    def state(p):
-        f, t, tt = choreography(p)
-        cam = tuple(lerp(f["cam"][j], t["cam"][j], tt) for j in range(3))
-        look = tuple(lerp(f["look"][j], t["look"][j], tt) for j in range(3))
-        return cam, look, lerp(f["lens"], t["lens"], tt)
-
-    def dist(a, b):
-        return sum((a[i] - b[i]) ** 2 for i in range(3)) ** 0.5
-
-    def cost(a, b):
-        # точка взгляда весит больше камеры: поворот кадра заметнее проезда
-        return dist(a[0], b[0]) + dist(a[1], b[1]) * 1.4 + abs(a[2] - b[2]) / 60 * 0.35
-
-    xs = [i / samples for i in range(samples + 1)]
-    st = [state(x) for x in xs]
-    raw = [cost(st[i - 1], st[i]) for i in range(1, samples + 1)]
-    avg = sum(raw) / len(raw)
-
-    # Пол скорости — то, что удерживает раскадровку от самоуничтожения. Без
-    # него участок, где камера стоит, «стоит ничего» по пути и получает почти
-    # ноль кадров: первый прогон отдал пяти блокам 14 кадров из 96, а всё
-    # остальное ушло в проезды. Считая паузу не дешевле, чем FLOOR от средней
-    # скорости, мы оставляем ей заметную долю плёнки.
-    floor = SPEED_FLOOR * avg
     cum = [0.0]
-    for c in raw:
-        cum.append(cum[-1] + max(c, floor))
-    return xs, cum, cum[-1]
+    for i in range(1, samples + 1):
+        cum.append(cum[-1] + step(st[i - 1], st[i]))
+    return us, cum, cum[-1]
 
 
-# Две ручки распределения кадров по прокрутке:
-#   --equalize     0 — как было (рывки), 1 — идеально ровная скорость;
-#   --speed-floor  насколько «дорого» стоит пауза. Чем больше, тем длиннее
-#                  стоячие кадры и тем ближе картина к исходной.
-# 1.4 подобрано численно вместе с профилем glide и переходами переменной
-# длины: пик скорости 2.07 против исходных 6.41, блокам достаётся 41 кадр.
-EQUALIZE = float(arg("--equalize", "0.9"))
-SPEED_FLOOR = float(arg("--speed-floor", "1.4"))
+_US, _ARC, _LEN = _arc_table()
 
-_XS, _CUM, _TOTAL = _phase_remap_table()
-
-
-def remap_phase(p):
-    """Прокрутка → фаза. 0 — как было, 1 — полностью ровное движение."""
-    if EQUALIZE <= 0 or _TOTAL <= 0:
-        return p
-    target = p * _TOTAL
-    lo, hi = 0, len(_CUM) - 1
+def route_at_scroll(p):
+    """Позиция на маршруте при прокрутке p — строго пропорционально пути."""
+    target = clamp(p, 0.0, 1.0) * _LEN
+    lo, hi = 0, len(_ARC) - 1
     while lo < hi:
         mid = (lo + hi) // 2
-        if _CUM[mid] < target:
+        if _ARC[mid] < target:
             lo = mid + 1
         else:
             hi = mid
-    return lerp(p, _XS[lo], EQUALIZE)
+    return _US[lo]
 
 
-# Дальше по файлу PHASE — это фаза хореографии, а SCROLL — позиция прокрутки.
+# SCROLL — позиция прокрутки, PHASE — точка на маршруте камеры. Между ними
+# лежит пересчёт по длине пути: он и держит одну скорость на всей плёнке.
 SCROLL = PHASE
-PHASE = remap_phase(SCROLL)
+PHASE = route_at_scroll(SCROLL)
 
-# фазы хореографии
-# Налив привязан к третьему блоку раскадровки (0.432–0.580 прокрутки): начинается
-# на входе в блок и заканчивается к его концу, чтобы в блоке «Чёрное зеркало»
-# чашка была уже полной, а волна на поверхности — затухающей.
-POUR = clamp((PHASE - 0.440) / 0.150, 0.0, 1.0)
+# Налив привязан к третьей ключевой точке маршрута (u = 0.5 — «Налив»):
+# начинается на подходе к ней и заканчивается, когда камера уходит к «Зеркалу»,
+# чтобы там чашка была уже полной, а волна — затухающей.
+POUR = clamp((PHASE - 0.430) / 0.145, 0.0, 1.0)
 FILL = smoothstep(0.0, 1.0, POUR)
 FLOW = min(clamp(POUR / 0.10, 0, 1), clamp((1 - POUR) / 0.14, 0, 1))
 
@@ -329,7 +264,7 @@ saucer.rotation_euler[2] = math.radians(18)
 # так стык получается настоящим переходом, а не «заклёпкой» поверх
 bpy.ops.mesh.primitive_torus_add(
     major_radius=0.019, minor_radius=0.0052, major_segments=64, minor_segments=20,
-    location=(-0.0455, 0, 0.045), rotation=(math.pi / 2, 0, 0),
+    location=(-0.0585, 0, 0.045), rotation=(math.pi / 2, 0, 0),
 )
 handle = bpy.context.object
 handle.name = "Handle"
@@ -415,11 +350,15 @@ def coffee_surface(radius, height, name="Coffee"):
         # Угол смещает фазу, а не растягивает радиус: множитель на r закручивал
         # кольца в спираль, чего на воде не бывает. Сдвиг фазы даёт то, что надо —
         # кольца слегка гуляют, оставаясь кольцами.
-        wob = 0.55 * math.sin(a * 3.0 + t * 0.31) + 0.30 * math.sin(a * 5.0 - t * 0.23)
+        # Всё, что зависит от угла, гасим у центра. Там сетка сходится в одну
+        # вершину, и любая угловая добавка рвёт поверхность звездой-воронкой:
+        # соседние сегменты просят разную высоту в точке, которая физически одна.
+        edge = smoothstep(0.0, 0.34, r / radius)
+        wob = (0.55 * math.sin(a * 3.0 + t * 0.31) + 0.30 * math.sin(a * 5.0 - t * 0.23)) * edge
         w1 = math.sin(785.0 * r - t + wob) * math.exp(-r * decay)
         w2 = math.sin(1290.0 * r - t * 1.37 + 2.1 + wob * 0.7) * math.exp(-r * 88.0) * 0.45
         # мелкая рябь поверх — она ловит блик и не даёт зеркалу быть гладким
-        fine = math.sin(1700.0 * r + a * 6.0 - t * 2.0) * math.exp(-r * 40.0) * 0.13
+        fine = math.sin(1700.0 * r + a * 6.0 * edge - t * 2.0) * math.exp(-r * 40.0) * 0.13 * edge
         # перекос: у стенки максимален, в центре нуля — это и есть слошинг
         s = (r / radius) * math.cos(a - 0.6) * math.sin(t * 0.42) * slosh
         return (w1 + w2 + fine) * impact + s
@@ -594,6 +533,15 @@ if PROPS:
     nap_obj.location = (-0.115, 0.165, 0.0)
     nap_obj.rotation_euler[2] = math.radians(17)
 
+# Позы зерна, запечённые физикой. Файл готовит render/bake_beans.py; без него
+# сцена откатывается на случайную расстановку.
+BEAN_BAKE = []
+_bake_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "beans.json")
+if os.path.exists(_bake_path):
+    import json as _json
+    with open(_bake_path, encoding="utf-8") as _fh:
+        BEAN_BAKE = _json.load(_fh)
+
 BEAN_SPILL = 26
 beans = []
 if BEAN_SPILL:
@@ -606,21 +554,19 @@ if BEAN_SPILL:
         b = coffee_bean(f"Bean{i:02d}", seed=i + 1)
         # Пятно справа-впереди от чашки: в общем плане это натюрморт на стойке,
         # а в блоке «Зерно» камера приходит сюда и россыпь становится сюжетом.
-        ang = spread.uniform(0, math.tau)
-        rad = 0.038 * math.sqrt(spread.random())
-        # каждое пятое зерно лежит на соседях: ровный ковёр в один слой
-        # читается разложенным вручную, а не рассыпанным
-        stacked = i % 5 == 0 and i > 0
-        b.location = (
-            0.105 + math.cos(ang) * rad,
-            -0.028 + math.sin(ang) * rad * 0.62,
-            0.0030 + (0.0042 if stacked else 0.0),
-        )
-        b.rotation_euler = (
-            spread.uniform(-1.1, 1.1) if stacked else spread.uniform(-0.35, 0.35),
-            spread.uniform(-0.3, 0.3),
-            spread.uniform(0, math.tau),
-        )
+        if BEAN_BAKE and i < len(BEAN_BAKE):
+            # Позы из физической симуляции (render/bake_beans.py). Раньше здесь
+            # были случайные числа, и зерно висело в воздухе, тонуло в камне и
+            # опиралось на соседей боком — так настоящее зерно не ложится.
+            b.location = BEAN_BAKE[i]["loc"]
+            b.rotation_euler = BEAN_BAKE[i]["rot"]
+        else:
+            # запасной вариант, если запечённых поз нет
+            ang = spread.uniform(0, math.tau)
+            rad = 0.038 * math.sqrt(spread.random())
+            b.location = (0.105 + math.cos(ang) * rad, -0.028 + math.sin(ang) * rad * 0.62, 0.0030)
+            b.rotation_euler = (spread.uniform(-0.35, 0.35), spread.uniform(-0.3, 0.3),
+                                spread.uniform(0, math.tau))
         beans.append(b)
 
 # ── струя и носик ────────────────────────────────────────────────────────────
@@ -890,10 +836,10 @@ mat_c, nt_c, bsdf_c = new_material("Coffee")
 # видно одно отражение свода — и жидкость читается полированным металлом.
 # Настоящий эспрессо тёмный, но тёплый: в нём есть красно-коричневая глубина,
 # которая проступает там, куда отражение не попадает.
-set_input(bsdf_c, "Base Color", (0.042, 0.015, 0.006, 1))
+set_input(bsdf_c, "Base Color", (0.028, 0.010, 0.004, 1))
 # Чуть шершавее зеркала: гладкая плёнка отражает свод резким белым пятном,
 # а на настоящем кофе он размазан.
-set_input(bsdf_c, "Roughness", 0.135)
+set_input(bsdf_c, "Roughness", 0.085)
 set_input(bsdf_c, "IOR", 1.34)
 set_input(bsdf_c, "Specular IOR Level", 0.42)
 ripple_bump = nt_c.nodes.new("ShaderNodeBump")
@@ -969,7 +915,7 @@ if beans:
     nt_bn.links.new(geo_bn.outputs["Pointiness"], pointy.inputs["Value"])
 
     roast = nt_bn.nodes.new("ShaderNodeRGB")
-    roast.outputs[0].default_value = (0.048, 0.021, 0.011, 1)
+    roast.outputs[0].default_value = (0.036, 0.015, 0.007, 1)
     silverskin = nt_bn.nodes.new("ShaderNodeRGB")
     silverskin.outputs[0].default_value = (0.31, 0.22, 0.15, 1)
 
@@ -1118,6 +1064,24 @@ if RIM > 0:
 # видны вовсе, потому что гнуть в отражении нечего. Эта панель существует
 # только ради отражения — в диффуз и в дымку она не бьёт, общей яркости кадра
 # не поднимает, но даёт кофе светлую полосу, которую ломает каждая волна.
+# Лампа над стойкой. До неё сцену держали только холодное утреннее окно и
+# контровой стрип — предметы читались верно, но кадр выходил серым, как склад,
+# а не как кафе. Тёплый источник сверху даёт то, чего не хватало: пятно света
+# на камне, в которое поставлена чашка, и мягкий спад в темноту по краям.
+# Цвет — лампа накаливания около 2600K: она греет картинку, не перекрашивая
+# сами предметы.
+if LAMP > 0:
+    bpy.ops.object.light_add(type="SPOT", location=(-0.045, 0.020, 0.560))
+    lamp = bpy.context.object
+    lamp.name = "PendantLamp"
+    lamp.data.energy = LAMP
+    lamp.data.color = (1.0, 0.66, 0.36)
+    lamp.data.spot_size = math.radians(78)
+    lamp.data.spot_blend = 0.72         # мягкая граница, без театрального круга
+    lamp.data.shadow_soft_size = 0.055  # абажур, а не точка: тени остаются мягкими
+    lamp.rotation_euler = (math.radians(6), 0, 0)
+    lamp.visible_camera = False
+
 if CEIL > 0:
     # Ставится не «над чашкой», а туда, куда уходит отражённый луч: камера
     # смотрит на кофе спереди-сверху, значит зеркало показывает ей то, что
@@ -1253,21 +1217,18 @@ if FILL > 0.25:
 # ── камера ──────────────────────────────────────────────────────────────────
 # Раскадровка и хореография объявлены в начале файла: по ним же считается
 # пересчёт прокрутки в фазу, а он нужен раньше, чем строится геометрия.
-frm, to, tt = choreography(PHASE)
-mix3 = lambda k: tuple(lerp(frm[k][j], to[k][j], tt) for j in range(3))
-cam_pos = mix3("cam")
-look_at = mix3("look")
+cam_pos, look_at, _lens, _fstop, _shift = _at(PHASE)
 
 bpy.ops.object.camera_add(location=cam_pos)
 cam = bpy.context.object
 scene.camera = cam
-cam.data.lens = lerp(frm["lens"], to["lens"], tt)
+cam.data.lens = _lens
 cam.data.sensor_width = 36
 # сдвиг кадра вместо доворота: перспектива предмета не искажается,
 # а сбоку освобождается место под текст
-cam.data.shift_x = lerp(frm["shift"], to["shift"], tt)
+cam.data.shift_x = _shift
 cam.data.dof.use_dof = True
-cam.data.dof.aperture_fstop = lerp(frm["fstop"], to["fstop"], tt)
+cam.data.dof.aperture_fstop = _fstop
 
 target = bpy.data.objects.new("Target", None)
 bpy.context.collection.objects.link(target)
