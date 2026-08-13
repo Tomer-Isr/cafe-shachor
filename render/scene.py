@@ -263,8 +263,8 @@ saucer.rotation_euler[2] = math.radians(18)
 # ручка: тор, вдавленный в стенку, затем объединённый с корпусом —
 # так стык получается настоящим переходом, а не «заклёпкой» поверх
 bpy.ops.mesh.primitive_torus_add(
-    major_radius=0.019, minor_radius=0.0052, major_segments=64, minor_segments=20,
-    location=(-0.0585, 0, 0.045), rotation=(math.pi / 2, 0, 0),
+    major_radius=0.0185, minor_radius=0.0050, major_segments=72, minor_segments=22,
+    location=(-0.0405, 0, 0.045), rotation=(math.pi / 2, 0, 0),
 )
 handle = bpy.context.object
 handle.name = "Handle"
@@ -285,16 +285,16 @@ boolean.solver = "EXACT"
 # ровно по внутренней поверхности, как у настоящей посуды, где она держится
 # снаружи и внутрь не проходит. Порядок важен — только после UNION.
 CAVITY_PROFILE = [
-    (0.0000, 0.00685),
-    (0.0235, 0.00785),
-    (0.0285, 0.01750),
-    (0.0335, 0.03550),
-    (0.0375, 0.05550),
-    (0.0400, 0.06950),
-    (0.0412, 0.07450),
-    (0.0000, 0.07450),
+    (0.0000, 0.00700),
+    (0.0240, 0.00800),
+    (0.0290, 0.01800),
+    (0.0340, 0.03600),
+    (0.0380, 0.05600),
+    (0.0405, 0.07000),
+    (0.0415, 0.07420),
+    (0.0000, 0.07420),
 ]
-cavity = lathe(CAVITY_PROFILE, "Cavity", segments=128)
+cavity = lathe(CAVITY_PROFILE, "Cavity", segments=192, wobble=0.012)
 cavity.hide_render = True
 cavity.hide_viewport = True
 carve = cup.modifiers.new("carve_inside", "BOOLEAN")
@@ -533,16 +533,51 @@ if PROPS:
     nap_obj.location = (-0.115, 0.165, 0.0)
     nap_obj.rotation_euler[2] = math.radians(17)
 
-# Позы зерна, запечённые физикой. Файл готовит render/bake_beans.py; без него
-# сцена откатывается на случайную расстановку.
-BEAN_BAKE = []
+# Зерно сыплется по прокрутке. Физика (render/bake_beans.py) дала только позы
+# покоя — как горсть ЛЕЖИТ; полёт считаем здесь, потому что тайминг должен
+# подчиняться прокрутке, а не кадровой частоте симулятора.
+BEAN_REST = []
 _bake_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "beans.json")
 if os.path.exists(_bake_path):
     import json as _json
     with open(_bake_path, encoding="utf-8") as _fh:
-        BEAN_BAKE = _json.load(_fh)
+        _sim = _json.load(_fh)
+    BEAN_REST = _sim.get("rest", []) if isinstance(_sim, dict) else _sim
 
-BEAN_SPILL = 26
+# Сыпание занимает первую треть прокрутки: к макро-кадру россыпь должна уже
+# лежать, иначе камера приходит смотреть на кашу из летящих зёрен.
+FALL = clamp(SCROLL / 0.33, 0.0, 1.0)
+FALL_FROM = 0.34   # высота, с которой зерно входит в кадр
+
+
+def bean_pose(i, total):
+    """Где зерно на прокрутке: (позиция, поворот, видно ли его вообще)."""
+    rest = BEAN_REST[i]
+    # каждое зерно стартует чуть позже предыдущего — получается струйка
+    t0 = (i / max(1, total - 1)) * 0.74
+    p = clamp((FALL - t0) / 0.26, 0.0, 1.0)
+    if p <= 0.0:
+        return None, None, False
+
+    x, y, z = rest["loc"]
+    rx, ry, rz = rest["rot"]
+    if p >= 1.0:
+        return (x, y, z), (rx, ry, rz), True
+
+    # путь проходится по квадрату — это и есть свободное падение
+    height = z + (FALL_FROM - z) * (1.0 - p * p)
+    # лёгкий снос: зерно приходит в свою точку не строго по отвесу
+    drift = (1.0 - p) * 0.011
+    a = i * 2.399   # золотой угол — направления сноса не повторяются
+    spin = (1.0 - p) * 7.5
+    return (
+        (x + math.cos(a) * drift, y + math.sin(a) * drift, height),
+        (rx + spin * 0.9, ry + spin * 0.6, rz + spin * 1.3),
+        True,
+    )
+
+
+BEAN_SPILL = 28
 beans = []
 if BEAN_SPILL:
     import random as _rnd
@@ -554,14 +589,16 @@ if BEAN_SPILL:
         b = coffee_bean(f"Bean{i:02d}", seed=i + 1)
         # Пятно справа-впереди от чашки: в общем плане это натюрморт на стойке,
         # а в блоке «Зерно» камера приходит сюда и россыпь становится сюжетом.
-        if BEAN_BAKE and i < len(BEAN_BAKE):
-            # Позы из физической симуляции (render/bake_beans.py). Раньше здесь
-            # были случайные числа, и зерно висело в воздухе, тонуло в камне и
-            # опиралось на соседей боком — так настоящее зерно не ложится.
-            b.location = BEAN_BAKE[i]["loc"]
-            b.rotation_euler = BEAN_BAKE[i]["rot"]
+        if BEAN_REST and i < len(BEAN_REST):
+            loc, rot, shown = bean_pose(i, min(BEAN_SPILL, len(BEAN_REST)))
+            if not shown:
+                # зерно ещё не сыпалось — его в кадре нет
+                b.hide_render = True
+                b.location = (0, 0, -1)
+            else:
+                b.location = loc
+                b.rotation_euler = rot
         else:
-            # запасной вариант, если запечённых поз нет
             ang = spread.uniform(0, math.tau)
             rad = 0.038 * math.sqrt(spread.random())
             b.location = (0.105 + math.cos(ang) * rad, -0.028 + math.sin(ang) * rad * 0.62, 0.0030)

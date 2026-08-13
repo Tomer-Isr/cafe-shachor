@@ -3,14 +3,12 @@
 
   blender -b -P render/bake_beans.py -- --count 26 --out render/assets/beans.json
 
-Зачем отдельный скрипт. Раньше зёрна расставлялись случайными числами: высота
-у всех одна, повороты произвольные — часть висела в воздухе, часть тонула в
-камне, «стопки» стояли так, как настоящее зерно стоять не может. Физика решает
-это сама, но гонять её на каждом кадре нельзя: сцена собирается заново, и
-рассыпка гуляла бы от кадра к кадру, а плёнке нужна неподвижная россыпь.
+Физика отвечает здесь только за одно: как горсть ЛЕЖИТ. Позы покоя ложатся в
+JSON, а полёт зерна сцена анимирует сама — так тайминг сыпания подчиняется
+прокрутке, а не кадровой частоте симулятора.
 
-Поэтому симуляция прогоняется один раз, а её итог — положение и поворот каждого
-зерна — ложится в JSON, который scene.py просто читает.
+Гонять солвер на каждом кадре нельзя в любом случае: сцена собирается заново,
+и рассыпка гуляла бы от кадра к кадру.
 """
 import bpy, json, math, os, random, sys
 
@@ -29,12 +27,19 @@ FRAMES = int(arg("--frames", "200"))
 
 rnd = random.Random(SEED)
 
+# Высота ожидания — заведомо выше того, что попадает в кадр общего плана,
+# и шаг выпуска: 26 зёрен по одному каждые 8 кадров дают струйку на 200 кадров.
+HOLD_Z = 0.016
+RELEASE_EVERY = int(arg("--release-every", "8"))
+
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 scene.frame_start, scene.frame_end = 1, FRAMES
 
 # ── стойка ───────────────────────────────────────────────────────────────────
-bpy.ops.mesh.primitive_plane_add(size=2, location=(0, 0, 0))
+# Пол — не плоскость, а брусок: тонкий коллайдер мелкое быстрое тело пробивает
+# насквозь (одно зерно улетело на 140 метров вниз), толстый — нет.
+bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, -1.0))
 floor = bpy.context.object
 bpy.ops.rigidbody.object_add(type="PASSIVE")
 floor.rigid_body.friction = 0.85
@@ -66,14 +71,25 @@ for i in range(COUNT):
     b.scale = (0.0052, 0.0036, 0.0030)
     bpy.ops.object.transform_apply(scale=True)
 
-    # сыплем узкой струйкой с небольшой высоты — так ложится настоящая горсть
+    # Ждут высоко над кадром и падают по очереди. Если отпустить все разом,
+    # физика укладывает горсть за полсекунды: на плёнке падения просто не
+    # видно, зерно уже лежит на первом же экране.
     ang = rnd.uniform(0, math.tau)
     rad = 0.019 * math.sqrt(rnd.random())
-    b.location = (CX + math.cos(ang) * rad, CY + math.sin(ang) * rad * 0.8, 0.016 + i * 0.010)
+    # Все зёрна падают сразу, но стоят столбиком на разной высоте — нижние
+    # долетают первыми, верхние последними, и получается струйка. Управлять
+    # очередью через физику не вышло: замороженное тело работает стеной и
+    # расшвыривает падающих, ключи на положении перебивают симуляцию, а
+    # выключение из мира тело потом не возвращает.
+    # Разброс по горизонтали обязателен: падая в одну точку, зерно строит
+    # башню в четверть метра вместо горсти на камне.
+    b.location = (CX + math.cos(ang) * rad, CY + math.sin(ang) * rad * 0.8,
+                  HOLD_Z + i * 0.010)
     b.rotation_euler = (rnd.uniform(0, math.tau), rnd.uniform(0, math.tau), rnd.uniform(0, math.tau))
 
     bpy.ops.rigidbody.object_add(type="ACTIVE")
     rb = b.rigid_body
+
     rb.collision_shape = "CONVEX_HULL"
     rb.mass = 0.00018          # зерно весит примерно 0.18 г
     rb.friction = 0.95         # сухое зерно почти не скользит
@@ -84,24 +100,72 @@ for i in range(COUNT):
     beans.append(b)
 
 # точность контактов: на объектах такого размера дефолт пропускает столкновения
-scene.rigidbody_world.substeps_per_frame = 12
-scene.rigidbody_world.solver_iterations = 20
+# Замедленная гравитация вместо земной. С 9.81 зерно бьётся о камень на 2.8 м/с
+# и раскатывается по всей площадке; поджимать его тесным бортиком нельзя —
+# солвер начинает выдавливать зёрна сквозь пол. Мягкое падение решает и то,
+# и другое, а на плёнке читается замедленной съёмкой, что здесь только к месту.
+# Гравитация сильно ниже земной: зерно опускается медленно, поток растягивается
+# на всю первую треть плёнки и читается замедленной съёмкой.
+scene.gravity = (0.0, 0.0, -9.81)
+# Кэш физики по умолчанию обрывается на 250-м кадре, и симуляция дальше просто
+# не считается — зёрна застывают в воздухе там, где их застал предел. Ловилось
+# это как «зерно не долетает» и уводило в сторону на несколько заходов.
+scene.rigidbody_world.point_cache.frame_start = 1
+scene.rigidbody_world.point_cache.frame_end = FRAMES
+scene.rigidbody_world.substeps_per_frame = 24
+scene.rigidbody_world.solver_iterations = 30
 
 # ── прогон ───────────────────────────────────────────────────────────────────
+# Пишем каждый второй шаг: плёнке хватает, а файл вдвое легче.
+STEP = 2
+history = []
 for f in range(1, FRAMES + 1):
     scene.frame_set(f)
-
-dg = bpy.context.evaluated_depsgraph_get()
-data = []
-for b in beans:
-    m = b.evaluated_get(dg).matrix_world
-    loc = m.translation
-    rot = m.to_euler("XYZ")
-    data.append({"loc": [loc.x, loc.y, loc.z], "rot": [rot.x, rot.y, rot.z]})
+    if f % STEP and f != FRAMES:
+        continue
+    dg = bpy.context.evaluated_depsgraph_get()
+    frame = []
+    for b in beans:
+        m = b.evaluated_get(dg).matrix_world
+        loc = m.translation
+        rot = m.to_euler("XYZ")
+        frame.append({"loc": [loc.x, loc.y, loc.z], "rot": [rot.x, rot.y, rot.z]})
+    history.append(frame)
+data = {"count": COUNT, "rest": history[-1]}
 
 os.makedirs(os.path.dirname(os.path.abspath(OUT)), exist_ok=True)
 with open(OUT, "w", encoding="utf-8") as fh:
     json.dump(data, fh, indent=1)
 
-zs = [d["loc"][2] for d in data]
-print(f"[bake] {len(data)} зёрен, высота от {min(zs)*1000:.1f} до {max(zs)*1000:.1f} мм → {OUT}")
+# Отбраковка. Солвер изредка выбрасывает одно зерно из партии — оно уходит на
+# километры вниз или зависает в воздухе. Ловить это подбором параметров дороже,
+# чем просто выкинуть сбойные: в кадре разница между 26 и 24 зёрнами незаметна,
+# а зерно, летящее сквозь стол, заметно сразу.
+def sane(pose):
+    x, y, z = pose["loc"]
+    return 0.001 < z < 0.030 and abs(x - CX) < 0.13 and abs(y - CY) < 0.13
+
+
+# Хвост, где уже ничего не двигается, плёнке не нужен: он съедал бы прокрутку
+# на неподвижную картинку.
+def moved(f1, f2):
+    return max(abs(a["loc"][k] - b["loc"][k]) for a, b in zip(f1, f2) for k in range(3))
+
+
+settle = len(history) - 1
+while settle > 2 and moved(history[settle - 1], history[settle]) < 2e-5:
+    settle -= 1
+history = history[: settle + 1]
+print(f"[bake] движение закончилось на шаге {settle} из {len(history) - 1}")
+
+keep = [i for i, pose in enumerate(history[-1]) if sane(pose)]
+dropped = COUNT - len(keep)
+if dropped:
+    print(f"[bake] отбраковано зёрен: {dropped}")
+    history = [[frame[i] for i in keep] for frame in history]
+COUNT = len(keep)
+
+last = history[-1]
+zs = [d["loc"][2] for d in last]
+print(f"[bake] {COUNT} зёрен, {len(history)} шагов; в покое высота "
+      f"{min(zs)*1000:.1f}–{max(zs)*1000:.1f} мм → {OUT}")
