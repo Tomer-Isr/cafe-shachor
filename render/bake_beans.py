@@ -29,7 +29,7 @@ rnd = random.Random(SEED)
 
 # Высота ожидания — заведомо выше того, что попадает в кадр общего плана,
 # и шаг выпуска: 26 зёрен по одному каждые 8 кадров дают струйку на 200 кадров.
-HOLD_Z = 0.016
+HOLD_Z = 0.055
 RELEASE_EVERY = int(arg("--release-every", "8"))
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -76,16 +76,15 @@ for i in range(COUNT):
     # видно, зерно уже лежит на первом же экране.
     ang = rnd.uniform(0, math.tau)
     rad = 0.019 * math.sqrt(rnd.random())
-    # Все зёрна падают сразу, но стоят столбиком на разной высоте — нижние
-    # долетают первыми, верхние последними, и получается струйка. Управлять
-    # очередью через физику не вышло: замороженное тело работает стеной и
-    # расшвыривает падающих, ключи на положении перебивают симуляцию, а
-    # выключение из мира тело потом не возвращает.
-    # Разброс по горизонтали обязателен: падая в одну точку, зерно строит
-    # башню в четверть метра вместо горсти на камне.
-    b.location = (CX + math.cos(ang) * rad, CY + math.sin(ang) * rad * 0.8,
-                  HOLD_Z + i * 0.010)
+    # Очередь стоит строго столбиком и срывается снизу вверх: каждое следующее
+    # зерно летит по коридору, который только что освободило предыдущее, и ни
+    # во что не врезается. Разброс по горизонтали минимальный — иначе зерно
+    # цепляет соседа по очереди, и его отбрасывает в сторону.
+    b.location = (CX + math.cos(ang) * 0.004, CY + math.sin(ang) * 0.004,
+                  HOLD_Z + i * 0.012)
     b.rotation_euler = (rnd.uniform(0, math.tau), rnd.uniform(0, math.tau), rnd.uniform(0, math.tau))
+    # куда зерно должно приземлиться — лёгкий разлёт задаём начальной скоростью
+    b.delta_location = (0.0, 0.0, 0.0)
 
     bpy.ops.rigidbody.object_add(type="ACTIVE")
     rb = b.rigid_body
@@ -94,9 +93,17 @@ for i in range(COUNT):
     rb.mass = 0.00018          # зерно весит примерно 0.18 г
     rb.friction = 0.95         # сухое зерно почти не скользит
     rb.restitution = 0.02      # и почти не прыгает
-    rb.linear_damping = 0.45
-    rb.angular_damping = 0.75
+    rb.linear_damping = 0.72
+    rb.angular_damping = 0.85
     rb.collision_margin = 0.0002
+
+    # до своей очереди зерно заморожено; коридор под ним к этому моменту пуст
+    release = 1 + i * RELEASE_EVERY
+    rb.kinematic = True
+    b.keyframe_insert(data_path="rigid_body.kinematic", frame=1)
+    b.keyframe_insert(data_path="rigid_body.kinematic", frame=release - 1)
+    rb.kinematic = False
+    b.keyframe_insert(data_path="rigid_body.kinematic", frame=release)
     beans.append(b)
 
 # точность контактов: на объектах такого размера дефолт пропускает столкновения
@@ -116,8 +123,9 @@ scene.rigidbody_world.substeps_per_frame = 24
 scene.rigidbody_world.solver_iterations = 30
 
 # ── прогон ───────────────────────────────────────────────────────────────────
-# Пишем каждый второй шаг: плёнке хватает, а файл вдвое легче.
-STEP = 2
+# Пишем каждый кадр: плёнка проигрывает историю кадр в кадр, поэтому темп
+# сыпания должен совпадать с темпом симуляции, иначе зерно летит ускоренно.
+STEP = 1
 history = []
 for f in range(1, FRAMES + 1):
     scene.frame_set(f)
@@ -131,11 +139,6 @@ for f in range(1, FRAMES + 1):
         rot = m.to_euler("XYZ")
         frame.append({"loc": [loc.x, loc.y, loc.z], "rot": [rot.x, rot.y, rot.z]})
     history.append(frame)
-data = {"count": COUNT, "rest": history[-1]}
-
-os.makedirs(os.path.dirname(os.path.abspath(OUT)), exist_ok=True)
-with open(OUT, "w", encoding="utf-8") as fh:
-    json.dump(data, fh, indent=1)
 
 # Отбраковка. Солвер изредка выбрасывает одно зерно из партии — оно уходит на
 # километры вниз или зависает в воздухе. Ловить это подбором параметров дороже,
@@ -153,7 +156,10 @@ def moved(f1, f2):
 
 
 settle = len(history) - 1
-while settle > 2 and moved(history[settle - 1], history[settle]) < 2e-5:
+# Порог не может быть микроскопическим: улёгшееся зерно продолжает дрожать
+# на сотых долях миллиметра, и хвост «движения» тянулся вдвое дольше самой
+# укладки, растягивая сыпание на плёнке.
+while settle > 2 and moved(history[settle - 1], history[settle]) < 3e-4:
     settle -= 1
 history = history[: settle + 1]
 print(f"[bake] движение закончилось на шаге {settle} из {len(history) - 1}")
@@ -164,6 +170,13 @@ if dropped:
     print(f"[bake] отбраковано зёрен: {dropped}")
     history = [[frame[i] for i in keep] for frame in history]
 COUNT = len(keep)
+
+# Файл пишется последним — после обрезки хвоста и отбраковки, иначе на диск
+# уходит сырая история, а все проверки остаются только в консоли.
+data = {"count": COUNT, "rest": history[-1], "frames": history}
+os.makedirs(os.path.dirname(os.path.abspath(OUT)), exist_ok=True)
+with open(OUT, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=1)
 
 last = history[-1]
 zs = [d["loc"][2] for d in last]

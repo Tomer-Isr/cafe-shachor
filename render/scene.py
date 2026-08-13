@@ -260,18 +260,45 @@ cup = lathe(CUP_PROFILE, "Cup", wobble=0.012)
 saucer = lathe(SAUCER_PROFILE, "Saucer", wobble=0.006)
 saucer.rotation_euler[2] = math.radians(18)
 
-# ручка: тор, вдавленный в стенку, затем объединённый с корпусом —
-# так стык получается настоящим переходом, а не «заклёпкой» поверх
-bpy.ops.mesh.primitive_torus_add(
-    major_radius=0.0185, minor_radius=0.0050, major_segments=72, minor_segments=22,
-    location=(-0.0405, 0, 0.045), rotation=(math.pi / 2, 0, 0),
-)
-handle = bpy.context.object
-handle.name = "Handle"
-handle.scale = (1.0, 1.25, 1.0)
-for p in handle.data.polygons:
-    p.use_smooth = True
+# ── ручка ────────────────────────────────────────────────────────────────────
+# Профиль по кривой, а не тор с булевой операцией. Тор задавался одними
+# координатами центра, и подобрать их не выходило: пододвинешь — кольцо лезет
+# внутрь чашки, отодвинешь — висит рядом бубликом. У кривой концы ставятся
+# ровно туда, куда нужно, — они уходят в стенку и там заканчиваются.
+handle_curve = bpy.data.curves.new("HandleCurve", type="CURVE")
+handle_curve.dimensions = "3D"
+handle_curve.resolution_u = 24
+spline = handle_curve.splines.new("BEZIER")
 
+# путь ручки в плоскости XZ: верхний корень → наружу → низ → нижний корень.
+# Крайние точки утоплены в стенку, но не доходят до внутренней поверхности.
+HANDLE_PATH = [
+    (-0.0395, 0.0, 0.0630),
+    (-0.0600, 0.0, 0.0655),
+    (-0.0720, 0.0, 0.0480),
+    (-0.0620, 0.0, 0.0315),
+    (-0.0395, 0.0, 0.0280),
+]
+spline.bezier_points.add(len(HANDLE_PATH) - 1)
+for bp, co in zip(spline.bezier_points, HANDLE_PATH):
+    bp.co = co
+    bp.handle_left_type = bp.handle_right_type = "AUTO"
+
+# сечение — слегка сплющенный овал: круглая в сечении ручка выглядит проволокой
+handle_curve.bevel_depth = 0.0052
+handle_curve.bevel_resolution = 8
+handle_curve.use_fill_caps = True
+
+handle = bpy.data.objects.new("Handle", handle_curve)
+bpy.context.collection.objects.link(handle)
+handle.scale = (1.0, 0.82, 1.0)
+
+bpy.context.view_layer.objects.active = handle
+handle.select_set(True)
+bpy.ops.object.convert(target="MESH")
+handle.select_set(False)
+for pl in handle.data.polygons:
+    pl.use_smooth = True
 handle.hide_render = True
 handle.hide_viewport = True
 
@@ -280,10 +307,8 @@ boolean.operation = "UNION"
 boolean.object = handle
 boolean.solver = "EXACT"
 
-# Тор шире стенки и дальним боком вылезает в полость — изнутри это читается
-# куском ручки, повисшим над кофе. Вычитаем объём полости: ручка обрезается
-# ровно по внутренней поверхности, как у настоящей посуды, где она держится
-# снаружи и внутрь не проходит. Порядок важен — только после UNION.
+# Полость по-прежнему вырезается: если кончик ручки всё же заденет внутреннюю
+# поверхность, срез пройдёт ровно по ней и останется незаметным.
 CAVITY_PROFILE = [
     (0.0000, 0.00700),
     (0.0240, 0.00800),
@@ -335,11 +360,20 @@ def coffee_surface(radius, height, name="Coffee"):
     obj = bpy.data.objects.new(name, me)
     bpy.context.collection.objects.link(obj)
 
-    # Жизнь поверхности идёт по прокрутке: во время налива волна сильная,
-    # после — затухает, но не умирает совсем.
+    # Волну поднимает струя — и только она. Раньше рябь держала треть амплитуды
+    # даже после налива, поэтому в кадре «взгляд в чашку», куда камера приходит
+    # уже с выключенной струёй, круги расходились сами по себе, из ниоткуда.
+    # Теперь после удара волна затухает по-настоящему, как в реальной чашке:
+    # за секунду-полторы поверхность успокаивается.
     t = PHASE * 26.0
-    impact = 0.00027 * (0.35 + 0.65 * FLOW)
-    slosh = 0.00022 * (0.30 + 0.70 * FLOW)
+    # сколько прокрутки прошло с конца налива
+    since = max(0.0, POUR - 1.0) if POUR < 1.0 else max(0.0, PHASE - (0.430 + 0.145))
+    calm = math.exp(-since * 26.0)          # затухание после струи
+    # совсем слабый остаток — поверхность живой жидкости не бывает стеклом
+    live = max(FLOW, calm if POUR >= 1.0 else FLOW, 0.055)
+
+    impact = 0.00027 * live
+    slosh = 0.00022 * (0.18 + 0.82 * live)
     decay = 62.0
 
     def z_at(r, a):
@@ -533,49 +567,29 @@ if PROPS:
     nap_obj.location = (-0.115, 0.165, 0.0)
     nap_obj.rotation_euler[2] = math.radians(17)
 
-# Зерно сыплется по прокрутке. Физика (render/bake_beans.py) дала только позы
-# покоя — как горсть ЛЕЖИТ; полёт считаем здесь, потому что тайминг должен
-# подчиняться прокрутке, а не кадровой частоте симулятора.
-BEAN_REST = []
+# Зерно сыплется по прокрутке. Физика (render/bake_beans.py) считает всё сама —
+# и полёт, и удары, и укладку, — а сюда приходит готовая история: поза каждого
+# зерна на каждом шаге. Прежняя ручная формула полёта давала характерный обман:
+# в кадре всегда одно зерно в начале своего пути, и это читалось как взлёт.
+BEAN_HISTORY = []
 _bake_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "beans.json")
 if os.path.exists(_bake_path):
     import json as _json
     with open(_bake_path, encoding="utf-8") as _fh:
         _sim = _json.load(_fh)
-    BEAN_REST = _sim.get("rest", []) if isinstance(_sim, dict) else _sim
+    if isinstance(_sim, dict):
+        BEAN_HISTORY = _sim.get("frames") or ([_sim["rest"]] if "rest" in _sim else [])
+    else:
+        BEAN_HISTORY = [_sim]
 
-# Сыпание занимает первую треть прокрутки: к макро-кадру россыпь должна уже
-# лежать, иначе камера приходит смотреть на кашу из летящих зёрен.
-FALL = clamp(SCROLL / 0.33, 0.0, 1.0)
-FALL_FROM = 0.34   # высота, с которой зерно входит в кадр
-
-
-def bean_pose(i, total):
-    """Где зерно на прокрутке: (позиция, поворот, видно ли его вообще)."""
-    rest = BEAN_REST[i]
-    # каждое зерно стартует чуть позже предыдущего — получается струйка
-    t0 = (i / max(1, total - 1)) * 0.74
-    p = clamp((FALL - t0) / 0.26, 0.0, 1.0)
-    if p <= 0.0:
-        return None, None, False
-
-    x, y, z = rest["loc"]
-    rx, ry, rz = rest["rot"]
-    if p >= 1.0:
-        return (x, y, z), (rx, ry, rz), True
-
-    # путь проходится по квадрату — это и есть свободное падение
-    height = z + (FALL_FROM - z) * (1.0 - p * p)
-    # лёгкий снос: зерно приходит в свою точку не строго по отвесу
-    drift = (1.0 - p) * 0.011
-    a = i * 2.399   # золотой угол — направления сноса не повторяются
-    spin = (1.0 - p) * 7.5
-    return (
-        (x + math.cos(a) * drift, y + math.sin(a) * drift, height),
-        (rx + spin * 0.9, ry + spin * 0.6, rz + spin * 1.3),
-        True,
-    )
-
+# Сыпание должно закончиться к макро-кадру зерна (примерно четверть прокрутки),
+# иначе камера приходит смотреть на кашу из летящих зёрен. Длительность
+# симуляции подобрана под это окно: история проигрывается кадр в кадр, а не
+# ускоренно — иначе полёта не видно, зерно будто просто возникает на камне.
+BEAN_POSES = []
+if BEAN_HISTORY:
+    _t = clamp(SCROLL / 0.26, 0.0, 1.0)
+    BEAN_POSES = BEAN_HISTORY[int(_t * (len(BEAN_HISTORY) - 1))]
 
 BEAN_SPILL = 28
 beans = []
@@ -589,15 +603,12 @@ if BEAN_SPILL:
         b = coffee_bean(f"Bean{i:02d}", seed=i + 1)
         # Пятно справа-впереди от чашки: в общем плане это натюрморт на стойке,
         # а в блоке «Зерно» камера приходит сюда и россыпь становится сюжетом.
-        if BEAN_REST and i < len(BEAN_REST):
-            loc, rot, shown = bean_pose(i, min(BEAN_SPILL, len(BEAN_REST)))
-            if not shown:
-                # зерно ещё не сыпалось — его в кадре нет
-                b.hide_render = True
-                b.location = (0, 0, -1)
-            else:
-                b.location = loc
-                b.rotation_euler = rot
+        if BEAN_POSES and i < len(BEAN_POSES):
+            pose = BEAN_POSES[i]
+            b.location = pose["loc"]
+            b.rotation_euler = pose["rot"]
+            # зёрна, ещё ждущие своей очереди, стоят высоко над кадром —
+            # в объектив они не попадают, прятать отдельно не нужно
         else:
             ang = spread.uniform(0, math.tau)
             rad = 0.038 * math.sqrt(spread.random())
