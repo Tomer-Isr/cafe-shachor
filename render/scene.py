@@ -372,7 +372,7 @@ def coffee_surface(radius, height, name="Coffee"):
     # совсем слабый остаток — поверхность живой жидкости не бывает стеклом
     live = max(FLOW, calm if POUR >= 1.0 else FLOW, 0.055)
 
-    impact = 0.00027 * live
+    impact = 0.00021 * live
     slosh = 0.00022 * (0.18 + 0.82 * live)
     decay = 62.0
 
@@ -389,8 +389,8 @@ def coffee_surface(radius, height, name="Coffee"):
         # соседние сегменты просят разную высоту в точке, которая физически одна.
         edge = smoothstep(0.0, 0.34, r / radius)
         wob = (0.55 * math.sin(a * 3.0 + t * 0.31) + 0.30 * math.sin(a * 5.0 - t * 0.23)) * edge
-        w1 = math.sin(785.0 * r - t + wob) * math.exp(-r * decay)
-        w2 = math.sin(1290.0 * r - t * 1.37 + 2.1 + wob * 0.7) * math.exp(-r * 88.0) * 0.45
+        w1 = math.sin(1150.0 * r - t + wob) * math.exp(-r * decay)
+        w2 = math.sin(1880.0 * r - t * 1.37 + 2.1 + wob * 0.7) * math.exp(-r * 88.0) * 0.45
         # мелкая рябь поверх — она ловит блик и не даёт зеркалу быть гладким
         fine = math.sin(1700.0 * r + a * 6.0 * edge - t * 2.0) * math.exp(-r * 40.0) * 0.13 * edge
         # перекос: у стенки максимален, в центре нуля — это и есть слошинг
@@ -729,6 +729,72 @@ def set_input(bsdf, name, value):
         bsdf.inputs[name].default_value = value
 
 
+
+# ── текстуры ─────────────────────────────────────────────────────────────────
+# Процедурный шум даёт «поверхность вообще», а не конкретный материал: камень
+# из пары нойзов читается пластиком, сколько его ни настраивай. Настоящие
+# PBR-карты (Poly Haven, CC0) приносят то, чего шумом не набрать — прожилки,
+# сколы, разную затёртость в разных местах.
+TEX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "tex")
+
+
+def pbr_material(name, prefix, scale=1.0, tint=None, rough_boost=0.0, bump=1.0):
+    """Материал из карт <prefix>_diff/_rough/_nor. Без карт вернёт None."""
+    diff = os.path.join(TEX_DIR, f"{prefix}_diff.jpg")
+    if not os.path.exists(diff):
+        return None
+    mat, nt, bsdf = new_material(name)
+
+    coord = nt.nodes.new("ShaderNodeTexCoord")
+    mapping = nt.nodes.new("ShaderNodeMapping")
+    mapping.inputs["Scale"].default_value = (scale, scale, scale)
+    nt.links.new(coord.outputs["Object"], mapping.inputs["Vector"])
+
+    def load(suffix, non_color=True):
+        path = os.path.join(TEX_DIR, f"{prefix}_{suffix}.jpg")
+        if not os.path.exists(path):
+            return None
+        tex = nt.nodes.new("ShaderNodeTexImage")
+        tex.image = bpy.data.images.load(path)
+        if non_color:
+            tex.image.colorspace_settings.name = "Non-Color"
+        nt.links.new(mapping.outputs["Vector"], tex.inputs["Vector"])
+        return tex
+
+    base = load("diff", non_color=False)
+    if tint:
+        # Карты сняты при дневном свете и для тёмной сцены слишком светлые:
+        # приглушаем множителем, сохраняя рисунок камня.
+        mul = nt.nodes.new("ShaderNodeMix")
+        mul.data_type = "RGBA"
+        mul.blend_type = "MULTIPLY"
+        mul.inputs["Factor"].default_value = 1.0
+        nt.links.new(base.outputs["Color"], mul.inputs[6])
+        mul.inputs[7].default_value = (*tint, 1.0)
+        nt.links.new(mul.outputs[2], bsdf.inputs["Base Color"])
+    else:
+        nt.links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
+
+    rough = load("rough")
+    if rough:
+        if rough_boost:
+            add = nt.nodes.new("ShaderNodeMath")
+            add.operation = "ADD"
+            add.inputs[1].default_value = rough_boost
+            add.use_clamp = True
+            nt.links.new(rough.outputs["Color"], add.inputs[0])
+            nt.links.new(add.outputs[0], bsdf.inputs["Roughness"])
+        else:
+            nt.links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
+
+    nor = load("nor")
+    if nor:
+        nm = nt.nodes.new("ShaderNodeNormalMap")
+        nm.inputs["Strength"].default_value = bump
+        nt.links.new(nor.outputs["Color"], nm.inputs["Color"])
+        nt.links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
+    return mat
+
 # керамика: глазурь сверху, голая глина на ножке, крап шамота
 mat, nt, bsdf = new_material("Ceramic")
 geo = nt.nodes.new("ShaderNodeNewGeometry")
@@ -884,10 +950,10 @@ mat_c, nt_c, bsdf_c = new_material("Coffee")
 # видно одно отражение свода — и жидкость читается полированным металлом.
 # Настоящий эспрессо тёмный, но тёплый: в нём есть красно-коричневая глубина,
 # которая проступает там, куда отражение не попадает.
-set_input(bsdf_c, "Base Color", (0.028, 0.010, 0.004, 1))
+set_input(bsdf_c, "Base Color", (0.021, 0.0075, 0.003, 1))
 # Чуть шершавее зеркала: гладкая плёнка отражает свод резким белым пятном,
 # а на настоящем кофе он размазан.
-set_input(bsdf_c, "Roughness", 0.085)
+set_input(bsdf_c, "Roughness", 0.052)
 set_input(bsdf_c, "IOR", 1.34)
 set_input(bsdf_c, "Specular IOR Level", 0.42)
 ripple_bump = nt_c.nodes.new("ShaderNodeBump")
@@ -935,16 +1001,25 @@ if PROPS:
     nt_np.links.new(np_bump.outputs["Normal"], bsdf_np.inputs["Normal"])
     nap_obj.data.materials.append(mat_np)
 
-# камень стойки
-mat_s, nt_s, bsdf_s = new_material("Stone")
-set_input(bsdf_s, "Base Color", (0.020, 0.018, 0.016, 1))
-set_input(bsdf_s, "Roughness", 0.42)
-stone_bump = nt_s.nodes.new("ShaderNodeBump")
-stone_bump.inputs["Strength"].default_value = 0.06
-stone_noise = nt_s.nodes.new("ShaderNodeTexNoise")
-stone_noise.inputs["Scale"].default_value = 45.0
-nt_s.links.new(stone_noise.outputs["Fac"], stone_bump.inputs["Height"])
-nt_s.links.new(stone_bump.outputs["Normal"], bsdf_s.inputs["Normal"])
+# Камень стойки. Из плиточной текстуры вырезан кусок внутри одной плитки и
+# размножен зеркально в бесшовный тайл: линии облицовки на барной стойке
+# читались кафелем, а нужен цельный камень. Масштаб мелкий — в кадре видно
+# зерно камня, а не рисунок плиты.
+# Сила рельефа намеренно мала: зеркальный тайл бесшовен по цвету, но карта
+# нормалей при отражении меняет знак, и на стыках проступают тонкие линии.
+# При слабом рельефе их не видно, а зерно камня остаётся.
+mat_s = pbr_material("Stone", "counterseam", scale=1.7, tint=(0.085, 0.080, 0.074),
+                     rough_boost=0.06, bump=0.22)
+if mat_s is None:
+    mat_s, nt_s, bsdf_s = new_material("Stone")
+    set_input(bsdf_s, "Base Color", (0.020, 0.018, 0.016, 1))
+    set_input(bsdf_s, "Roughness", 0.42)
+    stone_bump = nt_s.nodes.new("ShaderNodeBump")
+    stone_bump.inputs["Strength"].default_value = 0.06
+    stone_noise = nt_s.nodes.new("ShaderNodeTexNoise")
+    stone_noise.inputs["Scale"].default_value = 45.0
+    nt_s.links.new(stone_noise.outputs["Fac"], stone_bump.inputs["Height"])
+    nt_s.links.new(stone_bump.outputs["Normal"], bsdf_s.inputs["Normal"])
 counter.data.materials.append(mat_s)
 
 # зерно: тёмная обжарка — почти чёрное, с масляным блеском выступающих мест
@@ -1000,11 +1075,11 @@ if FLOW > 0.02:
     mat_l, nt_l, bsdf_l = new_material("Liquid")
     set_input(bsdf_l, "Base Color", (0.055, 0.022, 0.009, 1))
     set_input(bsdf_l, "Roughness", 0.02)
-    set_input(bsdf_l, "Transmission Weight", 0.5)
+    set_input(bsdf_l, "Transmission Weight", 0.78)
     set_input(bsdf_l, "IOR", 1.34)
     absorb = nt_l.nodes.new("ShaderNodeVolumeAbsorption")
     absorb.inputs["Color"].default_value = (0.80, 0.30, 0.07, 1)
-    absorb.inputs["Density"].default_value = 165.0
+    absorb.inputs["Density"].default_value = 78.0
     out_l = next(n for n in nt_l.nodes if n.type == "OUTPUT_MATERIAL")
     nt_l.links.new(absorb.outputs["Volume"], out_l.inputs["Volume"])
     for o in bpy.data.objects:
@@ -1168,56 +1243,14 @@ bpy.ops.mesh.primitive_plane_add(size=4, location=(0, 0.62, 0))
 back = bpy.context.object
 back.name = "BackWall"
 back.rotation_euler = (math.radians(90), 0, 0)
-mat_b, nt_b, bsdf_b = new_material("Wall")
-set_input(bsdf_b, "Roughness", 0.94)
-
-# Кладка: кирпичная текстура даёт и цвет блоков, и швы между ними. Камень
-# тёплый, но держим его тёмным — светлая стена спорит с чёрной посудой.
-brick = nt_b.nodes.new("ShaderNodeTexBrick")
-brick.inputs["Color1"].default_value = (0.150, 0.122, 0.093, 1)
-brick.inputs["Color2"].default_value = (0.115, 0.093, 0.070, 1)
-brick.inputs["Mortar"].default_value = (0.052, 0.044, 0.035, 1)
-brick.inputs["Scale"].default_value = 1.45
-brick.inputs["Mortar Size"].default_value = 0.013
-brick.inputs["Mortar Smooth"].default_value = 0.35
-brick.inputs["Bias"].default_value = -0.10
-brick.inputs["Brick Width"].default_value = 0.62      # блок вытянут по горизонтали
-brick.inputs["Row Height"].default_value = 0.26
-brick_coord = nt_b.nodes.new("ShaderNodeTexCoord")
-nt_b.links.new(brick_coord.outputs["Object"], brick.inputs["Vector"])
-
-# Пятнистость камня поверх кладки: ровный цвет блока выдаёт процедуру
-stain = nt_b.nodes.new("ShaderNodeTexNoise")
-stain.inputs["Scale"].default_value = 5.5
-stain.inputs["Detail"].default_value = 7.0
-stain_mix = nt_b.nodes.new("ShaderNodeMix")
-stain_mix.data_type = "RGBA"
-stain_mix.inputs["Factor"].default_value = 0.22
-nt_b.links.new(brick.outputs["Color"], stain_mix.inputs[6])
-darker = nt_b.nodes.new("ShaderNodeRGB")
-darker.outputs[0].default_value = (0.042, 0.034, 0.026, 1)
-nt_b.links.new(darker.outputs[0], stain_mix.inputs[7])
-nt_b.links.new(stain.outputs["Fac"], stain_mix.inputs["Factor"])
-nt_b.links.new(stain_mix.outputs[2], bsdf_b.inputs["Base Color"])
-
-# Рельеф: швы утоплены (по маске кладки), поверх — крупная шероховатость камня
-wall_bump = nt_b.nodes.new("ShaderNodeBump")
-wall_bump.inputs["Strength"].default_value = 0.62
-seam = nt_b.nodes.new("ShaderNodeMix")
-seam.data_type = "FLOAT"
-seam.inputs[2].default_value = 0.0
-seam.inputs[3].default_value = 1.0
-nt_b.links.new(brick.outputs["Fac"], seam.inputs["Factor"])
-wall_noise = nt_b.nodes.new("ShaderNodeTexNoise")
-wall_noise.inputs["Scale"].default_value = 26.0
-wall_noise.inputs["Detail"].default_value = 6.0
-rough_stone = nt_b.nodes.new("ShaderNodeMix")
-rough_stone.data_type = "FLOAT"
-rough_stone.inputs["Factor"].default_value = 0.30
-nt_b.links.new(seam.outputs[0], rough_stone.inputs[2])
-nt_b.links.new(wall_noise.outputs["Fac"], rough_stone.inputs[3])
-nt_b.links.new(rough_stone.outputs[0], wall_bump.inputs["Height"])
-nt_b.links.new(wall_bump.outputs["Normal"], bsdf_b.inputs["Normal"])
+# Стена — карты настоящего песчаника: блоки, швы, выкрошенные углы и разная
+# затёртость камня. Процедурная кладка давала ровный кирпич без истории.
+mat_b = pbr_material("Wall", "wall", scale=0.55, tint=(0.30, 0.26, 0.21),
+                     rough_boost=0.05, bump=1.15)
+if mat_b is None:
+    mat_b, nt_b, bsdf_b = new_material("Wall")
+    set_input(bsdf_b, "Base Color", (0.075, 0.062, 0.048, 1))
+    set_input(bsdf_b, "Roughness", 0.94)
 back.data.materials.append(mat_b)
 
 # Пар: объём над чашкой, живёт только когда в ней есть горячий кофе.

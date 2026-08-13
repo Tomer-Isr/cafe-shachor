@@ -2,3 +2,8 @@ node_modules
 dist
 .DS_Store
 *.local
+
+# исходные карты Poly Haven (CC0) — качаются скриптом, в репозитории не нужны
+render/assets/tex/counter_diff.jpg
+render/assets/tex/counter_rough.jpg
+render/assets/tex/counter_nor.jpg
