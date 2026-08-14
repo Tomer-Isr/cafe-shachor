@@ -2,13 +2,23 @@ import { useEffect, useRef, useState } from 'react'
 import { COPY, type Locale } from './content/copy'
 import { Film } from './film/Film'
 import { FilmGL } from './film/FilmGL'
+import { Booking, Footer, Hero, Menu, Space, Ticker, Visit } from './ui/Sections'
 
 /**
- * Первый экран — скролл-плёнка: кадры, отрендеренные в Cycles, крутятся прокруткой.
- * Контента на странице пока нет намеренно: сначала должен держать кадр.
+ * Страница собрана из двух частей на одной сквозной прокрутке.
+ *
+ * Пролог — скролл-плёнка из Cycles: четыре экрана прокрутки отыгрывают все 144
+ * кадра, поверх идут три титра. Маршрут камеры размечен в `render/scene.py`:
+ * общий план (кадры 0–28), сближение и зерно (29–62), налив (63–106), взгляд
+ * внутрь чашки (107–143).
+ *
+ * Дальше плёнка кончилась — она остаётся стоять на последнем кадре, притухает
+ * под вуалью и передаёт эстафету контенту. Так главные кадры плёнки, налив и
+ * «чёрное зеркало», не закрыты текстом: ради них она и снималась.
  */
 const FRAME_COUNT = 144
-const SCROLL_SCREENS = 5
+/** сколько экранов прокрутки отдано плёнке до начала контента */
+const PROLOGUE_SCREENS = 4
 
 const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -34,37 +44,49 @@ const filmBase = () => {
   return `${import.meta.env.BASE_URL}${hd ? 'film-hd' : 'film'}/`
 }
 
+const clamp = (v: number, a = 0, b = 1) => Math.min(b, Math.max(a, v))
+
 export default function App() {
   const [locale, setLocale] = useState<Locale>('he')
   const [paused] = useState(prefersReducedMotion)
   const [gl, setGl] = useState(hasWebGL2)
-  const [progress, setProgress] = useState(0)
   // Плёнка выбирается один раз: менять её на лету значило бы выбросить всё
   // загруженное и начать качать заново посреди прокрутки.
   const [base] = useState(filmBase)
-  const [canHover] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia('(hover: hover)').matches,
-  )
+
+  /** какой из трёх титров пролога показан */
+  const [act, setAct] = useState<0 | 1 | 2>(0)
+  /** насколько фон притушен под контентом */
+  const [veil, setVeil] = useState(0)
 
   const progressRef = useRef(0)
+  const menuRef = useRef<HTMLElement | null>(null)
   const t = COPY[locale]
 
   useEffect(() => {
     let raf = 0
+    // ?shot=0.25 замораживает плёнку на кадре — так проверяются отдельные кадры
     const frozen = new URLSearchParams(window.location.search).get('shot')
     if (frozen !== null) {
-      const p = Math.min(1, Math.max(0, Number(frozen) || 0))
-      progressRef.current = p
-      setProgress(p)
+      progressRef.current = clamp(Number(frozen) || 0)
       return
     }
     const onScroll = () => {
       cancelAnimationFrame(raf)
       raf = requestAnimationFrame(() => {
-        const travel = document.documentElement.scrollHeight - window.innerHeight
-        const p = travel > 0 ? Math.min(1, Math.max(0, window.scrollY / travel)) : 0
+        const screen = window.innerHeight
+        const prologue = screen * PROLOGUE_SCREENS
+        const y = window.scrollY
+
+        // Плёнка привязана к прологу, а не ко всей странице: иначе кадры
+        // размазались бы по контенту и на первом экране почти не двигались.
+        const p = clamp(y / prologue)
         progressRef.current = p
-        setProgress(p)
+        setAct(p < 0.34 ? 0 : p < 0.68 ? 1 : 2)
+
+        // Вуаль поднимается на последней трети пролога — к началу контента
+        // сцена уже приглушена, и текст читается по спокойному фону.
+        setVeil(clamp((y - prologue * 0.66) / (prologue * 0.34)))
       })
     }
     onScroll()
@@ -82,8 +104,7 @@ export default function App() {
     document.documentElement.dir = t.dir
   }, [locale, t.dir])
 
-  // Титул держится на первом экране и растворяется, как только пошло движение.
-  const titleOpacity = Math.max(0, 1 - progress / 0.12)
+  const toMenu = () => menuRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 
   return (
     <>
@@ -94,39 +115,35 @@ export default function App() {
         <Film count={FRAME_COUNT} progressRef={progressRef} base={base} paused={paused} />
       )}
 
+      {/* фон не выключается, а притухает: сцена продолжает жить под контентом */}
       <div
-        className="pointer-events-none fixed inset-0 flex items-center px-[7vw]"
-        style={{ opacity: titleOpacity, transition: 'opacity 140ms linear' }}
-      >
-        {/* Предмет в кадре всегда слева, поэтому титул прижимаем физически вправо —
-            логическое ms-auto в иврите уводило его на ту же сторону, что и чашку. */}
-        <div className="max-w-[36ch]" style={{ marginLeft: 'auto', textAlign: t.dir === 'rtl' ? 'right' : 'left' }}>
-          <h1 className="text-[clamp(2.6rem,8vw,6rem)] leading-[0.95] text-[#efe7db]" style={{ fontFamily: 'var(--font-display)' }}>
-            {t.brand}
-          </h1>
-          <p className="mt-4 text-[clamp(0.95rem,2vw,1.35rem)] text-[#a99f92]" style={{ fontFamily: 'var(--font-body)' }}>
-            {t.heroLine}
-          </p>
-          {gl && !paused && (
-            <p className="mt-6 text-[0.78rem] uppercase tracking-[0.18em] text-[#6f675d]"
-               style={{ fontFamily: 'var(--font-body)' }}>
-              {/* мышь и палец умеют разное, и звать их одинаково — врать */}
-              {canHover ? t.cursorHint : t.touchHint}
-            </p>
-          )}
-        </div>
+        className="pointer-events-none fixed inset-0 z-[1] bg-[#0a0908]"
+        style={{ opacity: veil * 0.88 }}
+        aria-hidden="true"
+      />
+
+      <div className="relative z-[2]">
+        {/* пролог: плёнка под тремя титрами */}
+        <Hero t={t} onMenu={toMenu} act={act} screens={PROLOGUE_SCREENS} />
+
+        {/* дальше обычная страница по притушенному фону */}
+        <main className="bg-[#0a0908]">
+          <Ticker t={t} />
+          <Menu t={t} locale={locale} anchorRef={menuRef} />
+          <Space t={t} />
+          <Booking t={t} locale={locale} />
+          <Visit t={t} />
+          <Footer t={t} />
+        </main>
       </div>
 
-      {/* полоса прокрутки: содержания нет, она нужна плёнке как время */}
-      <main style={{ height: `${SCROLL_SCREENS * 100}svh` }} aria-hidden="true" />
-
-      <div className="fixed bottom-4 start-4 flex gap-1 text-xs">
+      <div className="fixed bottom-4 start-4 z-[3] flex gap-1 text-xs">
         {(['he', 'ru', 'en'] as Locale[]).map((l) => (
           <button
             key={l}
             onClick={() => setLocale(l)}
-            className={`border border-white/15 px-2 py-1 uppercase tracking-wider ${
-              l === locale ? 'bg-white/15 text-white' : 'text-white/55'
+            className={`border border-white/15 px-2 py-1 uppercase tracking-wider backdrop-blur-sm ${
+              l === locale ? 'bg-white/15 text-white' : 'bg-black/30 text-white/55'
             }`}
           >
             {l}

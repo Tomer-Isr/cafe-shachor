@@ -54,9 +54,11 @@ export function Reveal({ children, className = '', delay = 0 }: React.PropsWithC
  * непрерывно: предмет стоит → поворачивается печатью → наклоняется и льёт.
  * Текст меняется слоями поверх, поэтому сцена не перезапускается между актами.
  */
-export function Hero({ t, onMenu, act }: { t: Copy; onMenu: () => void; act: 0 | 1 | 2 }) {
+export function Hero({ t, onMenu, act, screens = 3 }: { t: Copy; onMenu: () => void; act: 0 | 1 | 2; screens?: number }) {
   return (
-    <section className="relative h-[300svh]">
+    // Высота задаётся снаружи: это и есть длина пролога, за которую плёнка
+    // отыгрывает все свои кадры.
+    <section className="relative" style={{ height: `${screens * 100}svh` }}>
       <div className="sticky top-0 flex h-[100svh] flex-col justify-end overflow-hidden px-6 pb-28 sm:px-10 sm:pb-20 md:justify-center md:pb-0 md:pl-[50%] md:pr-12 lg:pr-20">
         {/* на мобиле текст лежит внизу поверх сцены — гасим её градиентом;
             на десктопе он в правой половине, и сцену подпирает боковая вуаль */}
@@ -221,7 +223,7 @@ export function Menu({ t, locale, anchorRef }: { t: Copy; locale: Locale; anchor
               )}
               <div className="min-w-0 flex-1">
                 <p className="flex flex-wrap items-baseline gap-2">
-                  <span className="text-[17px]">{locale === 'he' ? m.he : m.ru}</span>
+                  <span className="text-[17px]">{locale === 'he' ? m.he : locale === 'en' ? m.en : m.ru}</span>
                   {m.diet?.map((d) => (
                     <span key={d} className="text-xs opacity-70" title={d}>
                       {DIET_MARK[d]}
@@ -229,7 +231,7 @@ export function Menu({ t, locale, anchorRef }: { t: Copy; locale: Locale; anchor
                   ))}
                   {m.bean && <span className="t-caption text-[10px] text-[var(--accent)]">{t.beanTitle}</span>}
                 </p>
-                {m.friday && <p className="t-caption mt-1 text-[10px]">{locale === 'he' ? 'בימי שישי בלבד' : 'только по пятницам'}</p>}
+                {m.friday && <p className="t-caption mt-1 text-[10px]">{t.fridayOnly}</p>}
               </div>
               <span className="text-[17px] text-[#c9c0b3]">
                 <Price value={m.price} />
@@ -314,7 +316,9 @@ export function Booking({ t, locale }: { t: Copy; locale: Locale }) {
   const text =
     locale === 'he'
       ? `שלום! אשמח לשולחן בחצר · ${guests} סועדים · ${time}`
-      : `Здравствуйте! Хочу стол во дворике · ${guests} гостей · ${time}`
+      : locale === 'en'
+        ? `Hi! I'd like a table in the yard · ${guests} guests · ${time}`
+        : `Здравствуйте! Хочу стол во дворике · ${guests} гостей · ${time}`
   const wa = `https://wa.me/972300000000?text=${encodeURIComponent(text)}`
 
   return (
@@ -326,7 +330,7 @@ export function Booking({ t, locale }: { t: Copy; locale: Locale }) {
 
         <div className="mt-8 flex flex-wrap gap-8">
           <div>
-            <p className="t-caption mb-3">{locale === 'he' ? 'סועדים' : 'Гостей'}</p>
+            <p className="t-caption mb-3">{t.bookGuests}</p>
             <div className="flex gap-2">
               {[1, 2, 3, 4, 5, 6].map((g) => (
                 <button
@@ -343,13 +347,13 @@ export function Booking({ t, locale }: { t: Copy; locale: Locale }) {
             </div>
             {guests >= 5 && (
               <p className="t-caption mt-3 max-w-xs normal-case tracking-normal text-[var(--accent)]">
-                {locale === 'he' ? 'מצמידים שני שולחנות — בחצר יש ארבעה.' : 'Сдвигаем два стола — во дворике их четыре.'}
+                {t.bookTablesJoin}
               </p>
             )}
           </div>
 
           <div>
-            <p className="t-caption mb-3">{locale === 'he' ? 'שעה' : 'Время'}</p>
+            <p className="t-caption mb-3">{t.bookHour}</p>
             <div className="flex flex-wrap gap-2">
               {slots.map((s) => (
                 <button
@@ -381,7 +385,7 @@ export function Booking({ t, locale }: { t: Copy; locale: Locale }) {
   )
 }
 
-export function Visit({ t, locale }: { t: Copy; locale: Locale }) {
+export function Visit({ t }: { t: Copy }) {
   const todayIdx = new Date().getDay() // 0 = вс
   const rowIdx = todayIdx === 6 ? 2 : todayIdx === 5 ? 1 : 0
   return (
@@ -414,9 +418,7 @@ export function Visit({ t, locale }: { t: Copy; locale: Locale }) {
           >
             WhatsApp
           </a>
-          <p className="t-caption mt-4 normal-case tracking-normal">
-            {locale === 'he' ? 'הכתובת בדיונית — זהו קונספט הדגמה.' : 'Адрес вымышленный — это демо-концепт.'}
-          </p>
+          <p className="t-caption mt-4 normal-case tracking-normal">{t.addressFake}</p>
         </div>
       </Reveal>
     </section>

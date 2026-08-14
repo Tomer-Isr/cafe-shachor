@@ -47,6 +47,12 @@ export interface Copy {
   bookRule: string
   bookHold: string
   bookCta: string
+  /** подписи внутри формы брони и в карточке меню — раньше жили в коде и в EN отдавали русский */
+  bookGuests: string
+  bookHour: string
+  bookTablesJoin: string
+  fridayOnly: string
+  addressFake: string
   visitTitle: string
   visitAddress: string
   visitPhone: string
@@ -99,6 +105,11 @@ export const COPY: Record<Locale, Copy> = {
     bookRule: 'מזמינים רק שולחנות בחצר. השולחן הארוך והבר — מי שהגיע, יושב.',
     bookHold: 'שומרים שולחן 15 דקות.',
     bookCta: 'לתאם בוואטסאפ',
+    bookGuests: 'סועדים',
+    bookHour: 'שעה',
+    bookTablesJoin: 'מצמידים שני שולחנות — בחצר יש ארבעה.',
+    fridayOnly: 'בימי שישי בלבד',
+    addressFake: 'הכתובת בדיונית — זהו קונספט הדגמה.',
     visitTitle: 'שעות וכתובת',
     visitAddress: 'סמטת הבורסקי 6, יפו',
     visitPhone: '03-000-0000',
@@ -153,6 +164,11 @@ export const COPY: Record<Locale, Copy> = {
     bookRule: 'Бронируем только столы во дворике. Общий стол и бар — кто пришёл, тот сидит.',
     bookHold: 'Держим стол 15 минут.',
     bookCta: 'Написать в WhatsApp',
+    bookGuests: 'Гостей',
+    bookHour: 'Время',
+    bookTablesJoin: 'Сдвигаем два стола — во дворике их четыре.',
+    fridayOnly: 'только по пятницам',
+    addressFake: 'Адрес вымышленный — это демо-концепт.',
     visitTitle: 'Часы и адрес',
     visitAddress: 'Переулок ха-Бурскаи 6, Яффо',
     visitPhone: '03-000-0000',
@@ -207,6 +223,11 @@ export const COPY: Record<Locale, Copy> = {
     bookRule: 'Only courtyard tables are bookable. The long table and the bar are first come, first served.',
     bookHold: 'We hold a table for 15 minutes.',
     bookCta: 'Message us on WhatsApp',
+    bookGuests: 'Guests',
+    bookHour: 'Time',
+    bookTablesJoin: 'We push two tables together — there are four in the yard.',
+    fridayOnly: 'Fridays only',
+    addressFake: 'The address is invented — this is a demo concept.',
     visitTitle: 'Hours and address',
     visitAddress: '6 HaBurskai Lane, Jaffa',
     visitPhone: '03-000-0000',
