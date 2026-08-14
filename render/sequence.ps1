@@ -13,9 +13,10 @@
 param(
     [int]$Frames = 96,
     [string]$Out = "D:\tmp\cafe-seq96",
-    [int]$RX = 1100,
-    [int]$RY = 620,
-    [int]$Samples = 128,
+    [int]$RX = 1600,
+    [int]$RY = 902,
+    [int]$Samples = 112,
+    [string]$Aux = "",          # папка для карт глубины; пусто — не считать
     [string]$Device = 'optix',
     [string]$Blender = "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe",
     [string]$Project = "D:\Claude\projects\cafe-shachor"
@@ -30,14 +31,19 @@ for ($i = 0; $i -lt $Frames; $i++) {
     if (Test-Path $file) { continue }
 
     $phase = [math]::Round($i / ($Frames - 1), 4)
-    # Пониженный приоритет: на шести ядрах рендер съедает машину целиком и
-    # работать за ней становится невозможно. Свободные ядра Blender всё равно
-    # заберёт — теряется только время, когда за компьютером реально работают.
-    $proc = Start-Process -FilePath $Blender -PassThru -NoNewWindow -Wait:$false -ArgumentList @(
+    $args = @(
         '-b', '-P', 'render\scene.py', '--',
         '--phase', $phase, '--device', $Device, '--out', $file,
         '--samples', $Samples, '--rx', $RX, '--ry', $RY
     )
+    # Карта глубины считается вторым проходом внутри того же запуска: сцена
+    # собирается один раз, поэтому она стоит секунды, а не второй прогон.
+    if ($Aux -ne "") { $args += @('--aux', $Aux, '--index', $i) }
+
+    # Пониженный приоритет: на шести ядрах рендер съедает машину целиком и
+    # работать за ней становится невозможно. Свободные ядра Blender всё равно
+    # заберёт — теряется только время, когда за компьютером реально работают.
+    $proc = Start-Process -FilePath $Blender -PassThru -NoNewWindow -Wait:$false -ArgumentList $args
     try { $proc.PriorityClass = 'BelowNormal' } catch { }
     $proc.WaitForExit()
 

@@ -7,8 +7,19 @@
 Приёмы: `D:\Claude\docs\3d-web-playbook.md` + `web-design-playbook.md`.
 
 ## Стек
-Vite + React 19 + TS · @react-three/fiber + drei + postprocessing · Tailwind v4.
-Локали HE (default, RTL) / RU. Деплой — статика на GitHub Pages.
+Vite + React 19 + TS · Tailwind v4. Локали HE (default, RTL) / RU / EN.
+Деплой — статика на GitHub Pages (из ветки `gh-pages`).
+
+## Герой — пререндер, а не реалтайм
+Сцена считается в Blender/Cycles (`render/scene.py`) и крутится прокруткой как
+плёнка. Реалтайм на R3F признан тупиком и снят; пакеты three/fiber ещё висят в
+зависимостях, но в сборку не идут.
+
+Каждый кадр приходит парой: картинка (`public/film` 1100 px для телефона,
+`public/film-hd` 1600 px для десктопа) и служебная карта `public/film-aux` —
+в красном канале глубина, в зелёном номер предмета. На ней держится вся
+реакция на курсор: параллакс по глубине, свет по контуру предмета, пар над
+чашкой, волна от нажатия. Подробности и грабли — `docs/STATUS.md`.
 
 ## UI Kit (фиксируется ДО кода, менять только здесь)
 

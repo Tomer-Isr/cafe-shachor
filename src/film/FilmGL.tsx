@@ -2,14 +2,26 @@ import { useEffect, useRef, useState } from 'react'
 
 /**
  * Скролл-плёнка на WebGL: кадры из Cycles крутятся прокруткой, но сверх этого
- * сцена отвечает на курсор.
+ * сцена отвечает на курсор — и отвечает как объём, а не как картинка.
  *
- * Зачем WebGL, а не canvas 2D. Кадры пререндерены и сами по себе мертвы: что
- * ни делай, это картинка. Чтобы страница ощущалась объёмной, кадру нужны две
- * вещи, которые в 2D дорого или невозможно: параллакс (сдвиг с лёгким зумом,
- * будто камера чуть повернулась вслед за взглядом) и рябь от клика, идущая
- * по поверхности волной. И то, и другое — это смещение координат текстуры,
- * то есть работа для фрагментного шейдера.
+ * Как это возможно у пререндера. Вместе с каждым кадром Cycles отдаёт вторую,
+ * служебную карту (`public/film-aux`): в красном канале — расстояние от
+ * камеры, в зелёном — номер предмета, которому принадлежит пиксель. Браузер
+ * читает её тем же шейдером, что и картинку, и поэтому знает три вещи,
+ * которых плоская плёнка знать не может:
+ *
+ *   • что ближе, а что дальше — предметы расходятся при движении курсора с
+ *     разной скоростью, как при настоящем смещении камеры;
+ *   • что именно лежит под курсором — свет ложится по контуру чашки, а не
+ *     круглым пятном рядом с ней;
+ *   • где поверхность, по которой идёт волна от нажатия.
+ *
+ * Прошлая версия считала положение предметов проекцией камеры заранее
+ * (`bake_hotspots.py`). Математика была верной, но жила отдельно от кадра:
+ * зоны разъезжались с картинкой на пару процентов, попасть в них курсором
+ * было почти нельзя, и эффект, сделанный и выложенный, Томер так и не увидел.
+ * Маска приходит из того же рендера, что и пиксели, поэтому разъехаться с
+ * ними уже не может.
  *
  * Плёнка при этом остаётся плёнкой: прокрутку движок ЧИТАЕТ, а не перехватывает.
  */
@@ -17,7 +29,10 @@ import { useEffect, useRef, useState } from 'react'
 interface Props {
   count: number
   progressRef: React.RefObject<number>
+  /** папка с кадрами; на десктопе — крупная плёнка, на телефоне лёгкая */
   base?: string
+  /** папка с картами глубины; без них эффекты вырождаются в мягкий сдвиг */
+  auxBase?: string
   paused?: boolean
   /** отключить реакцию на курсор (например, при prefers-reduced-motion) */
   still?: boolean
@@ -29,11 +44,14 @@ const BATCH = 8
 const SMOOTH = 0.16
 const DPR_CAP = 1.5
 const MAX_RIPPLES = 4
-const MAX_SPOTS = 4
-/** порядок важен: нулевой элемент — чашка, над ней рисуется пар */
-const SPOT_ORDER = ['cup', 'beans', 'pitcher', 'tamper'] as const
+/** номера предметов из render/scene.py: 1 — чашка, 2 — кофе, 3 — зерно… */
+const ID_CUP = 1
+/** размер служебной канвы, на которой JS читает маску под курсором */
+const PROBE_W = 160
+const PROBE_H = 90
 
 const framePath = (base: string, i: number) => `${base}frame-${String(i).padStart(3, '0')}.webp`
+const auxPath = (base: string, i: number) => `${base}aux-${String(i).padStart(3, '0')}.webp`
 
 const VERT = `#version 300 es
 in vec2 pos;
@@ -50,13 +68,25 @@ in vec2 uv;
 out vec4 color;
 
 uniform sampler2D frame;
+// Одна и та же карта заведена дважды: глубину надо читать сглаженно, иначе
+// ступени округления видны как полосы, а номер предмета — наоборот, точно,
+// иначе на границе чашки появляется предмет с номером «два с половиной».
+uniform sampler2D auxSmooth;  // R — глубина
+uniform sampler2D auxSharp;   // G — номер предмета / 8
 uniform vec2 canvasSize;
 uniform vec2 frameSize;
-uniform vec2 cursor;        // −1..1, сглаженная позиция курсора
+uniform vec2 cursorUV;      // 0..1 в координатах канвы, y снизу
 uniform float cursorLive;   // 0 — курсора нет, 1 — есть
-uniform vec4 ripples[${MAX_RIPPLES}];  // xy — центр, z — возраст в секундах, w — активна
-uniform vec4 spots[${MAX_SPOTS}];      // xy — центр объекта, z — радиус, w — наведение 0..1
+uniform float hasAux;       // карта глубины загружена
+uniform vec4 ripples[${MAX_RIPPLES}];  // xy — центр в координатах кадра, z — возраст, w — активна
+uniform vec4 cup;           // xy — центр чашки в кадре, z — полуширина, w — крупно ли она в кадре
+uniform float hoverId;      // номер предмета под курсором, 0 — фон
+uniform float hoverAmt;     // сила наведения, нарастает и гаснет плавно
+uniform vec2 hit;           // x — номер предмета по нажатию, y — возраст удара в секундах
 uniform float time;
+
+/** насколько далеко предметы расходятся за курсором: разница глубин × это */
+const float PARALLAX = 0.075;
 
 // Простой value-noise и фрактальная сумма: пар должен клубиться, а не ползти
 // однородным пятном.
@@ -85,81 +115,123 @@ vec2 coverUV(vec2 p) {
   return (p - 0.5) * scale + 0.5;
 }
 
-void main() {
-  // Параллакс: кадр чуть отъезжает от курсора и слегка приближается. Зум
-  // обязателен — без него по краям вылезает пустота от сдвига.
-  vec2 p = uv;
-  p = (p - 0.5) / 1.045 + 0.5;
-  p -= cursor * 0.012 * cursorLive;
+/** за краями кадра тянем крайний пиксель, чтобы сдвиг не оголял фон */
+vec2 hold(vec2 t) {
+  return clamp(t, vec2(0.0005), vec2(0.9995));
+}
 
-  // Рябь от клика: кольцевая волна, расходящаяся от точки и затухающая.
-  // Смещаем координаты вдоль радиуса — свет в кадре ломается сам собой,
-  // потому что искажается уже отрендеренная картинка со всеми её бликами.
+float depthAt(vec2 t) {
+  return hasAux > 0.5 ? texture(auxSmooth, hold(t)).r : 0.5;
+}
+
+/** номер предмета в точке кадра: 0 — фон, 1 — чашка, 2 — кофе… */
+float objectAt(vec2 t) {
+  return hasAux > 0.5 ? texture(auxSharp, hold(t)).g * 8.0 : 0.0;
+}
+
+/**
+ * Принадлежит ли точка предмету — с мягким краем. Маска втрое мельче кадра,
+ * и жёсткое сравнение дало бы по контуру чашки лесенку из крупных ступеней.
+ * Пять проб вокруг точки превращают ступень в полупиксельную растушёвку.
+ */
+float objectMask(vec2 t, float id) {
+  if (id < 0.5 || hasAux < 0.5) return 0.0;
+  vec2 e = 1.4 / vec2(textureSize(auxSharp, 0));
+  float s = step(abs(objectAt(t) - id), 0.35) * 2.0;
+  s += step(abs(objectAt(t + vec2(e.x, 0.0)) - id), 0.35);
+  s += step(abs(objectAt(t - vec2(e.x, 0.0)) - id), 0.35);
+  s += step(abs(objectAt(t + vec2(0.0, e.y)) - id), 0.35);
+  s += step(abs(objectAt(t - vec2(0.0, e.y)) - id), 0.35);
+  return s / 6.0;
+}
+
+void main() {
+  float frameAspect = frameSize.x / frameSize.y;
+
+  // Лёгкий зум обязателен: без него сдвиг оголяет края кадра.
+  vec2 p = (uv - 0.5) / 1.045 + 0.5;
+  vec2 base = coverUV(p);
+
+  // Направление взгляда и глубина точки, на которую смотрит курсор. Всё, что
+  // ближе неё, поедет в одну сторону, всё, что дальше — в другую: так ведёт
+  // себя настоящая сцена, когда камера чуть сдвигается вбок.
+  vec2 aim = (cursorUV - 0.5) * 2.0 * cursorLive;
+  float focus = depthAt(coverUV(cursorUV));
+
+  vec2 t = base;
+  if (hasAux > 0.5) {
+    // Смещение зависит от глубины в точке, которая после смещения и окажется
+    // под этим пикселем — поэтому считаем в три приближения.
+    for (int i = 0; i < 3; i++) {
+      t = base + aim * PARALLAX * (depthAt(t) - focus);
+    }
+  } else {
+    t = base - aim * 0.012;
+  }
+
+  // Волна от нажатия идёт по поверхности от точки клика. Центр записан в
+  // координатах кадра, поэтому волна остаётся на своём месте в сцене, даже
+  // когда картинка едет за курсором.
   float glow = 0.0;
   for (int i = 0; i < ${MAX_RIPPLES}; i++) {
     if (ripples[i].w < 0.5) continue;
-    vec2 d = p - ripples[i].xy;
-    d.x *= canvasSize.x / canvasSize.y;   // круг остаётся кругом
+    vec2 d = t - ripples[i].xy;
+    d.x *= frameAspect;                   // круг остаётся кругом
     float dist = length(d);
     float age = ripples[i].z;
     float front = age * 0.42;             // скорость фронта
     float band = dist - front;
-    // узкое кольцо вокруг фронта, гаснущее со временем и с расстоянием
-    float ring = exp(-band * band * 900.0) * exp(-age * 2.2) * exp(-dist * 1.6);
-    p += normalize(d + 1e-6) * ring * 0.02;
+    // ближнее к камере качается сильнее — дальний план почти стоит
+    float near = mix(1.0, clamp(1.25 - depthAt(t), 0.2, 1.0), hasAux);
+    float ring = exp(-band * band * 900.0) * exp(-age * 2.2) * exp(-dist * 1.6) * near;
+    t += normalize(d + 1e-6) * ring * 0.02;
     glow += ring;
   }
 
-  // Наведение на предметы. Позиции объектов на экране посчитаны заранее для
-  // каждого кадра (render/bake_hotspots.py), поэтому пререндер умеет отвечать
-  // на курсор так, будто в браузере живая сцена.
+  // Предмет под курсором: подсвечиваем ровно его пиксели, а не круг рядом.
+  float same = objectMask(t, hoverId) * hoverAmt;
+
+  // Нажатие: предмет коротко вздрагивает и ловит свет.
+  float pulse = objectMask(t, hit.x) * exp(-hit.y * 3.4) * sin(hit.y * 17.0);
+
+  t.y += same * 0.0016 + pulse * 0.0028;
+
+  vec3 rgb = texture(frame, hold(t)).rgb;
+
+  // Пар над чашкой. На компьютере он поднимается, когда курсор на чашке; на
+  // телефоне наведения нет, поэтому пар включается сам, когда чашка выходит
+  // в кадре крупно — иначе эффекта не существовало бы вовсе.
+  // Сила пара зависит от того, на чашке ли курсор — а не от того, чашка ли
+  // под этим пикселем: пар поднимается над кромкой, где никакой чашки уже нет.
+  float cupHover = step(abs(hoverId - ${ID_CUP}.0), 0.35) * hoverAmt;
+  float steamAmt = max(cupHover, cup.w * 0.6);
   float steam = 0.0;
-  float warm = 0.0;
-  for (int i = 0; i < ${MAX_SPOTS}; i++) {
-    float hover = spots[i].w;
-    if (hover < 0.01) continue;
-    vec2 c = spots[i].xy;
-    float rad = spots[i].z;
-
-    vec2 d = p - c;
-    d.x *= canvasSize.x / canvasSize.y;
-    float dist = length(d);
-
-    // мягкое тепло по самому предмету — он «отзывается» на внимание
-    warm += hover * exp(-pow(dist / (rad * 0.9), 2.0)) * 0.55;
-
-    if (i == 0) {
-      // Пар над чашкой: клубы поднимаются от кромки, расходятся вверх и тают.
-      vec2 q = (p - c) / max(rad, 0.001);
-      q.x *= canvasSize.x / canvasSize.y;
-      if (q.y > -0.15 && q.y < 3.4) {
-        float rise = q.y + 0.15;
-        // чем выше, тем шире и тем слабее
-        float spread = 0.42 + rise * 0.55;
-        float across = exp(-pow(q.x / spread, 2.0));
-        float fade = smoothstep(0.0, 0.35, rise) * exp(-rise * 0.85);
-        float n = fbm(vec2(q.x * 2.6, q.y * 1.7 - time * 0.42));
-        float m = fbm(vec2(q.x * 5.1 + 7.3, q.y * 3.0 - time * 0.63));
-        float puff = smoothstep(0.42, 0.95, n * 0.65 + m * 0.35);
-        steam += puff * across * fade * hover;
-        // тёплый воздух чуть ведёт картинку за собой
-        p.y += puff * across * fade * hover * 0.004;
-      }
+  if (steamAmt > 0.01 && cup.z > 0.001) {
+    vec2 q = (t - cup.xy) / cup.z;
+    q.x *= frameAspect;
+    if (q.y > -0.15 && q.y < 3.4) {
+      float rise = q.y + 0.15;
+      float spread = 0.42 + rise * 0.55;     // чем выше, тем шире
+      float across = exp(-pow(q.x / spread, 2.0));
+      float fade = smoothstep(0.0, 0.35, rise) * exp(-rise * 0.85);
+      float n = fbm(vec2(q.x * 2.6, q.y * 1.7 - time * 0.42));
+      float m = fbm(vec2(q.x * 5.1 + 7.3, q.y * 3.0 - time * 0.63));
+      // Фрактальный шум колеблется у половины и почти не доходит до единицы;
+      // прежний порог 0.42…0.95 срезал клубы почти целиком, и пар существовал
+      // только в коде.
+      float puff = smoothstep(0.34, 0.72, n * 0.6 + m * 0.4);
+      steam = puff * across * fade * steamAmt;
     }
   }
 
-  vec2 t = coverUV(p);
-  // за краями кадра тянем крайний пиксель, чтобы параллакс не оголял фон
-  t = clamp(t, vec2(0.0005), vec2(0.9995));
-  vec3 rgb = texture(frame, t).rgb;
-
-  // Гребень волны ловит свет — иначе искажение читается как дефект картинки,
-  // а не как движение жидкой поверхности.
+  float luma = dot(rgb, vec3(0.299, 0.587, 0.114));
+  // Свет по предмету ложится сильнее там, где он и так светлее — иначе
+  // подсветка читается как наклейка поверх кадра. Доля намеренно скромная:
+  // предмет должен «отозваться», а не вспыхнуть.
+  rgb += vec3(0.42, 0.32, 0.20) * same * (0.05 + luma * 0.75) * 0.38;
   rgb += vec3(0.55, 0.42, 0.30) * glow * 0.30;
-
-  // Предмет под курсором теплеет, над чашкой поднимается пар.
-  rgb += vec3(0.36, 0.26, 0.16) * warm * 0.16;
-  rgb += vec3(0.82, 0.76, 0.70) * steam * 0.30;
+  rgb += vec3(0.60, 0.48, 0.34) * abs(pulse) * 0.22;
+  rgb += vec3(0.82, 0.76, 0.70) * steam * 0.5;
 
   color = vec4(rgb, 1.0);
 }`
@@ -176,69 +248,87 @@ function compile(gl: WebGL2RenderingContext, type: number, src: string) {
   return sh
 }
 
-export function FilmGL({ count, progressRef, base, paused = false, still = false, onFail }: Props) {
+/** Чашка на кадре: центр, полуширина и то, насколько крупно она стоит. */
+interface CupBox {
+  x: number
+  y: number
+  half: number
+  big: number
+}
+
+export function FilmGL({ count, progressRef, base, auxBase, paused = false, still = false, onFail }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const frames = useRef<(HTMLImageElement | null)[]>([])
+  const auxes = useRef<(HTMLImageElement | null)[]>([])
   const current = useRef(0)
   const [ready, setReady] = useState(0)
   const [fallback, setFallback] = useState(false)
 
-  const cursor = useRef({ x: 0, y: 0, tx: 0, ty: 0, live: 0 })
+  // курсор в координатах канвы (0..1, y снизу) — в том же виде уходит в шейдер
+  const cursor = useRef({ u: 0.5, v: 0.5, tu: 0.5, tv: 0.5, live: 0 })
   const ripples = useRef<{ x: number; y: number; born: number }[]>([])
-  // экранные позиции предметов по кадрам + текущая сила наведения на каждый
-  const spots = useRef<Record<string, [number, number, number]>[]>([])
-  const hover = useRef<number[]>(SPOT_ORDER.map(() => 0))
+  const hovered = useRef({ id: 0, amt: 0 })
+  const hit = useRef({ id: 0, born: -1e9 })
   const [overObject, setOverObject] = useState(false)
   const overRef = useRef(false)
 
   const root = base ?? `${import.meta.env.BASE_URL}film/`
+  const auxRoot = auxBase ?? `${import.meta.env.BASE_URL}film-aux/`
 
-  // ── загрузка кадров пачками ─────────────────────────────────────────────
+  // ── загрузка кадров и карт глубины пачками ──────────────────────────────
   useEffect(() => {
     frames.current = new Array(count).fill(null)
+    auxes.current = new Array(count).fill(null)
     let cancelled = false
     let loaded = 0
+
+    const load = (src: string, keep: (img: HTMLImageElement) => void) =>
+      new Promise<void>((resolve) => {
+        const img = new Image()
+        img.decoding = 'async'
+        img.onload = () => {
+          keep(img)
+          resolve()
+        }
+        img.onerror = () => resolve()
+        img.src = src
+      })
 
     const loadBatch = async (start: number) => {
       if (cancelled || start >= count) return
       await Promise.all(
         Array.from({ length: Math.min(BATCH, count - start) }, (_, k) => {
           const i = start + k
-          return new Promise<void>((resolve) => {
-            const img = new Image()
-            img.decoding = 'async'
-            img.onload = () => {
-              frames.current[i] = img
-              loaded += 1
-              if (!cancelled) setReady(loaded)
-              resolve()
-            }
-            img.onerror = () => resolve()
-            img.src = framePath(root, i)
+          return load(framePath(root, i), (img) => {
+            frames.current[i] = img
+            loaded += 1
+            if (!cancelled) setReady(loaded)
           })
         }),
       )
       loadBatch(start + BATCH)
     }
     loadBatch(0)
+
+    // Карты глубины идут следом за кадрами: они лёгкие, но картинка важнее.
+    const loadAux = async (start: number) => {
+      if (cancelled || start >= count) return
+      await Promise.all(
+        Array.from({ length: Math.min(BATCH, count - start) }, (_, k) => {
+          const i = start + k
+          return load(auxPath(auxRoot, i), (img) => {
+            auxes.current[i] = img
+          })
+        }),
+      )
+      loadAux(start + BATCH)
+    }
+    setTimeout(() => loadAux(0), 400)
+
     return () => {
       cancelled = true
     }
-  }, [count, root])
-
-  // ── экранные позиции предметов ──────────────────────────────────────────
-  useEffect(() => {
-    let alive = true
-    fetch(`${import.meta.env.BASE_URL}hotspots.json`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (alive && d?.data) spots.current = d.data
-      })
-      .catch(() => {})
-    return () => {
-      alive = false
-    }
-  }, [])
+  }, [count, root, auxRoot])
 
   // ── ввод ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -248,28 +338,27 @@ export function FilmGL({ count, progressRef, base, paused = false, still = false
 
     const move = (cx: number, cy: number) => {
       const r = el.getBoundingClientRect()
-      cursor.current.tx = ((cx - r.left) / r.width) * 2 - 1
-      cursor.current.ty = ((cy - r.top) / r.height) * 2 - 1
+      cursor.current.tu = (cx - r.left) / r.width
+      cursor.current.tv = 1 - (cy - r.top) / r.height
       cursor.current.live = 1
     }
     const onMouse = (e: MouseEvent) => move(e.clientX, e.clientY)
     const onLeave = () => {
       cursor.current.live = 0
-      cursor.current.tx = 0
-      cursor.current.ty = 0
-    }
-    const splash = (cx: number, cy: number) => {
-      const r = el.getBoundingClientRect()
-      ripples.current.push({
-        x: (cx - r.left) / r.width,
-        y: 1 - (cy - r.top) / r.height,
-        born: performance.now(),
-      })
-      if (ripples.current.length > MAX_RIPPLES) ripples.current.shift()
+      cursor.current.tu = 0.5
+      cursor.current.tv = 0.5
     }
     const onDown = (e: PointerEvent) => {
-      splash(e.clientX, e.clientY)
-      if (e.pointerType !== 'mouse') move(e.clientX, e.clientY)
+      move(e.clientX, e.clientY)
+      // Точку удара пересчитаем в координаты кадра в цикле отрисовки, где
+      // известен cover-фит; здесь запоминаем только момент и место на канве.
+      const r = el.getBoundingClientRect()
+      ripples.current.push({
+        x: (e.clientX - r.left) / r.width,
+        y: 1 - (e.clientY - r.top) / r.height,
+        born: -1, // −1 значит «ещё не переведено в координаты кадра»
+      })
+      if (ripples.current.length > MAX_RIPPLES) ripples.current.shift()
     }
 
     window.addEventListener('mousemove', onMouse, { passive: true })
@@ -318,24 +407,40 @@ export function FilmGL({ count, progressRef, base, paused = false, still = false
     gl.enableVertexAttribArray(loc)
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0)
 
-    const tex = gl.createTexture()
-    gl.bindTexture(gl.TEXTURE_2D, tex)
     // У WebGL начало координат текстуры внизу, у картинки — вверху. Без этого
     // флага кадр загружается зеркально по вертикали, и вся сцена встаёт вверх
-    // ногами. Координаты ряби при этом уже живут в UV-пространстве (y снизу),
+    // ногами. Координаты ряби живут в том же UV-пространстве (y снизу),
     // поэтому их пересчитывать не нужно.
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+
+    const makeTex = (unit: number, smooth: boolean) => {
+      const tex = gl.createTexture()
+      gl.activeTexture(gl.TEXTURE0 + unit)
+      gl.bindTexture(gl.TEXTURE_2D, tex)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      const f = smooth ? gl.LINEAR : gl.NEAREST
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f)
+      return tex
+    }
+    const texFrame = makeTex(0, true)
+    const texAuxSmooth = makeTex(1, true)
+    const texAuxSharp = makeTex(2, false)
+    gl.uniform1i(gl.getUniformLocation(prog, 'frame'), 0)
+    gl.uniform1i(gl.getUniformLocation(prog, 'auxSmooth'), 1)
+    gl.uniform1i(gl.getUniformLocation(prog, 'auxSharp'), 2)
 
     const uCanvas = gl.getUniformLocation(prog, 'canvasSize')
     const uFrame = gl.getUniformLocation(prog, 'frameSize')
-    const uCursor = gl.getUniformLocation(prog, 'cursor')
+    const uCursor = gl.getUniformLocation(prog, 'cursorUV')
     const uLive = gl.getUniformLocation(prog, 'cursorLive')
+    const uHasAux = gl.getUniformLocation(prog, 'hasAux')
     const uRipples = gl.getUniformLocation(prog, 'ripples')
-    const uSpots = gl.getUniformLocation(prog, 'spots')
+    const uCup = gl.getUniformLocation(prog, 'cup')
+    const uHoverId = gl.getUniformLocation(prog, 'hoverId')
+    const uHoverAmt = gl.getUniformLocation(prog, 'hoverAmt')
+    const uHit = gl.getUniformLocation(prog, 'hit')
     const uTime = gl.getUniformLocation(prog, 'time')
 
     const resize = () => {
@@ -347,20 +452,104 @@ export function FilmGL({ count, progressRef, base, paused = false, still = false
     resize()
     window.addEventListener('resize', resize)
 
-    const nearest = (i: number) => {
-      const f = frames.current
-      if (f[i]) return f[i]
-      for (let d = 1; d < f.length; d++) {
-        if (f[i - d]) return f[i - d]
-        if (f[i + d]) return f[i + d]
+    // Служебная канва: JS читает по ней, какой предмет под курсором и где
+    // стоит чашка. Мелкой копии хватает — счёт идёт на проценты экрана.
+    const probe = document.createElement('canvas')
+    probe.width = PROBE_W
+    probe.height = PROBE_H
+    const pctx = probe.getContext('2d', { willReadFrequently: true })
+    let probeFor = -1
+    let probeData: Uint8ClampedArray | null = null
+    let cupBox: CupBox = { x: 0.5, y: 0.5, half: 0, big: 0 }
+
+    let probeAt = 0
+
+    /** Разбор карты глубины: маска под курсором и рамка чашки. */
+    const readProbe = (img: HTMLImageElement, index: number) => {
+      if (!pctx || probeFor === index) return
+      // На быстрой прокрутке кадр меняется каждый раз, а перебор четырнадцати
+      // тысяч пикселей на слабом телефоне стоит заметно дороже, чем польза от
+      // того, что рамка чашки обновилась не через шестую долю секунды, а сразу.
+      const now = performance.now()
+      if (now - probeAt < 120) return
+      probeAt = now
+      probeFor = index
+      pctx.drawImage(img, 0, 0, PROBE_W, PROBE_H)
+      probeData = pctx.getImageData(0, 0, PROBE_W, PROBE_H).data
+      let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, area = 0
+      for (let y = 0; y < PROBE_H; y++) {
+        for (let x = 0; x < PROBE_W; x++) {
+          const g = probeData[(y * PROBE_W + x) * 4 + 1]
+          if (Math.abs(g - (ID_CUP * 255) / 8) > 8) continue
+          area += 1
+          if (x < minX) minX = x
+          if (x > maxX) maxX = x
+          if (y < minY) minY = y
+          if (y > maxY) maxY = y
+        }
+      }
+      if (area < 12) {
+        cupBox = { x: 0.5, y: 0.5, half: 0, big: 0 }
+        return
+      }
+      const half = (maxX - minX) / 2 / PROBE_W
+      cupBox = {
+        x: (minX + maxX) / 2 / PROBE_W,
+        // верхняя кромка чашки: пар должен подниматься от неё, а не из центра
+        y: 1 - minY / PROBE_H,
+        half: Math.max(half, 0.02),
+        // крупно ли она стоит в кадре — по этому включается пар без курсора
+        big: Math.min(1, Math.max(0, (area / (PROBE_W * PROBE_H) - 0.07) / 0.16)),
+      }
+    }
+
+    /** Номер предмета в точке кадра (0..1, y снизу). */
+    const objectAt = (u: number, v: number) => {
+      if (!probeData) return 0
+      const x = Math.round(u * (PROBE_W - 1))
+      const y = Math.round((1 - v) * (PROBE_H - 1))
+      if (x < 0 || y < 0 || x >= PROBE_W || y >= PROBE_H) return 0
+      const g = probeData[(y * PROBE_W + x) * 4 + 1]
+      return Math.round((g / 255) * 8)
+    }
+
+    /** Канва → кадр: тот же cover-фит, что в шейдере. */
+    const toFrame = (u: number, v: number, fw: number, fh: number) => {
+      const ca = el.width / el.height
+      const fa = fw / fh
+      const sx = ca > fa ? 1 : ca / fa
+      const sy = ca > fa ? fa / ca : 1
+      return [(u - 0.5) * sx + 0.5, (v - 0.5) * sy + 0.5] as const
+    }
+
+    const nearest = (list: (HTMLImageElement | null)[], i: number) => {
+      if (list[i]) return list[i]
+      for (let d = 1; d < list.length; d++) {
+        if (list[i - d]) return list[i - d]
+        if (list[i + d]) return list[i + d]
       }
       return null
     }
 
+    // Кадр заливается в видеопамять каждый раз, когда плёнка сдвинулась, то
+    // есть до шестидесяти раз в секунду. Полная texImage2D каждый раз заново
+    // выделяет хранилище под 1600×902; texSubImage2D пишет в уже выделенное,
+    // и на прокрутке это заметно дешевле.
+    const texSize = new WeakMap<WebGLTexture, string>()
+    const upload = (tex: WebGLTexture, img: HTMLImageElement) => {
+      const key = `${img.naturalWidth}x${img.naturalHeight}`
+      if (texSize.get(tex) === key) {
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGB, gl.UNSIGNED_BYTE, img)
+      } else {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img)
+        texSize.set(tex, key)
+      }
+    }
+
     let raf = 0
-    let uploaded: HTMLImageElement | null = null
+    let uploadedFrame: HTMLImageElement | null = null
+    let uploadedAux: HTMLImageElement | null = null
     const rippleData = new Float32Array(MAX_RIPPLES * 4)
-    const spotData = new Float32Array(MAX_SPOTS * 4)
     const startedAt = performance.now()
 
     const tick = () => {
@@ -368,63 +557,86 @@ export function FilmGL({ count, progressRef, base, paused = false, still = false
 
       const target = (progressRef.current ?? 0) * (count - 1)
       current.current += (target - current.current) * (paused ? 1 : SMOOTH)
-      const img = nearest(Math.round(current.current))
+      const index = Math.round(current.current)
+      const img = nearest(frames.current, index)
       if (!img) return
 
-      if (img !== uploaded) {
-        gl.bindTexture(gl.TEXTURE_2D, tex)
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img)
-        uploaded = img
+      if (img !== uploadedFrame) {
+        gl.activeTexture(gl.TEXTURE0)
+        gl.bindTexture(gl.TEXTURE_2D, texFrame)
+        upload(texFrame, img)
+        uploadedFrame = img
         gl.uniform2f(uFrame, img.naturalWidth, img.naturalHeight)
       }
 
+      const auxImg = nearest(auxes.current, index)
+      if (auxImg && auxImg !== uploadedAux) {
+        gl.activeTexture(gl.TEXTURE1)
+        gl.bindTexture(gl.TEXTURE_2D, texAuxSmooth)
+        upload(texAuxSmooth, auxImg)
+        gl.activeTexture(gl.TEXTURE2)
+        gl.bindTexture(gl.TEXTURE_2D, texAuxSharp)
+        upload(texAuxSharp, auxImg)
+        uploadedAux = auxImg
+      }
+      if (auxImg) readProbe(auxImg, index)
+      gl.uniform1f(uHasAux, auxImg ? 1 : 0)
+
       // курсор догоняет цель — резкое следование читается дёрганьем
       const c = cursor.current
-      c.x += (c.tx - c.x) * 0.07
-      c.y += (c.ty - c.y) * 0.07
-      gl.uniform2f(uCursor, c.x, c.y)
+      c.u += (c.tu - c.u) * 0.07
+      c.v += (c.tv - c.v) * 0.07
+      gl.uniform2f(uCursor, c.u, c.v)
       gl.uniform1f(uLive, c.live)
 
       const now = performance.now()
-      ripples.current = ripples.current.filter((r) => now - r.born < 2600)
+      const fw = img.naturalWidth
+      const fh = img.naturalHeight
+
+      // Что под курсором. Смотрим по невозмущённой точке кадра: параллакс
+      // сдвигает картинку на доли процента, а промах по предмету стоил бы
+      // всего эффекта.
+      const [cu, cv] = toFrame(c.u, c.v, fw, fh)
+      const idNow = c.live > 0 && !still ? objectAt(cu, cv) : 0
+      const h = hovered.current
+      if (idNow !== h.id) {
+        // перескочили на другой предмет — старый гасим быстро
+        h.amt *= 0.5
+        if (h.amt < 0.12) h.id = idNow
+      }
+      const want = h.id !== 0 && h.id === idNow ? 1 : 0
+      h.amt += (want - h.amt) * (want ? 0.12 : 0.07)
+      gl.uniform1f(uHoverId, h.id)
+      gl.uniform1f(uHoverAmt, h.amt)
+
+      const over = idNow !== 0
+      if (over !== overRef.current) {
+        overRef.current = over
+        setOverObject(over)
+      }
+
+      // Нажатие: точка удара переводится в координаты кадра один раз, чтобы
+      // волна осталась на месте в сцене.
       rippleData.fill(0)
+      ripples.current = ripples.current.filter((r) => r.born < 0 || now - r.born < 2600)
       ripples.current.forEach((r, i) => {
+        if (r.born < 0) {
+          const [fx, fy] = toFrame(r.x, r.y, fw, fh)
+          r.x = fx
+          r.y = fy
+          r.born = now
+          const id = objectAt(fx, fy)
+          if (id !== 0) hit.current = { id, born: now }
+        }
         rippleData[i * 4] = r.x
         rippleData[i * 4 + 1] = r.y
         rippleData[i * 4 + 2] = (now - r.born) / 1000
         rippleData[i * 4 + 3] = 1
       })
       gl.uniform4fv(uRipples, rippleData)
+      gl.uniform2f(uHit, hit.current.id, (now - hit.current.born) / 1000)
 
-      // Наведение: курсор в UV-пространстве против позиций предметов на этом
-      // кадре. Значение нарастает и гаснет плавно — резкое включение пара
-      // выглядит как мигание, а не как реакция.
-      const frameSpots = spots.current[Math.round(current.current)]
-      const cu = (c.tx + 1) / 2
-      const cv = 1 - (c.ty + 1) / 2
-      let near = false
-      SPOT_ORDER.forEach((id, i) => {
-        const sp = frameSpots?.[id]
-        let want = 0
-        if (sp && c.live > 0 && !still) {
-          const aspect = el.width / el.height
-          const dx = (cu - sp[0]) * aspect
-          const dy = cv - sp[1]
-          const dist = Math.hypot(dx, dy)
-          want = dist < sp[2] * 1.15 ? 1 : 0
-          if (want) near = true
-        }
-        hover.current[i] += (want - hover.current[i]) * (want ? 0.09 : 0.05)
-        spotData[i * 4] = sp ? sp[0] : -9
-        spotData[i * 4 + 1] = sp ? sp[1] : -9
-        spotData[i * 4 + 2] = sp ? sp[2] : 0.05
-        spotData[i * 4 + 3] = hover.current[i]
-      })
-      if (near !== overRef.current) {
-        overRef.current = near
-        setOverObject(near)
-      }
-      gl.uniform4fv(uSpots, spotData)
+      gl.uniform4f(uCup, cupBox.x, cupBox.y, cupBox.half, still ? 0 : cupBox.big)
       gl.uniform1f(uTime, (now - startedAt) / 1000)
       gl.uniform2f(uCanvas, el.width, el.height)
 
@@ -436,7 +648,9 @@ export function FilmGL({ count, progressRef, base, paused = false, still = false
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', resize)
       gl.deleteProgram(prog)
-      gl.deleteTexture(tex)
+      gl.deleteTexture(texFrame)
+      gl.deleteTexture(texAuxSmooth)
+      gl.deleteTexture(texAuxSharp)
       gl.deleteBuffer(buf)
     }
   }, [count, progressRef, paused, still, onFail])

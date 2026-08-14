@@ -1,10 +1,18 @@
 # -*- coding: utf-8 -*-
-"""PNG-секвенция из Cycles → webp в public/film.
+"""PNG-секвенция из Cycles → плёнки в public/.
 
-Бюджет из плейбука: кадр ≤ 50 КБ, вся плёнка ≤ 5 МБ. Тёмная сцена жмётся
-отлично, поэтому качество можно держать высоким.
+  python render/pack_frames.py D:/tmp/cafe-hi144 --aux D:/tmp/cafe-hi144-aux
 
-  python render/pack_frames.py D:/tmp/cafe-seq 1100
+Кладёт три вещи:
+
+  public/film/     кадр 1100 px — телефон и планшет
+  public/film-hd/  кадр 1600 px — десктоп
+  public/film-aux/ карта глубины и номеров предметов, 640 px
+
+Зачем две плёнки. Кадр 1100 px на мониторе 1920 растягивается почти вдвое, и
+сцена, чистая на телефоне, на компьютере выглядит замыленной — именно это
+Томер и увидел. Отдавать всем крупный кадр нельзя: он втрое тяжелее, а на
+телефоне разницы не видно.
 
 Пост-обработки здесь нет намеренно. Раньше поверх кадра ложились зерно
 (случайный шум в трети разрешения, растянутый обратно — пятна 3×3 пикселя)
@@ -12,29 +20,85 @@
 ту грязь, которую Томер увидел как «шероховатое изображение». Чем сцена
 темнее, тем меньше она прощает: картинку теперь везём из Cycles как есть.
 """
-import os, sys, glob
-from PIL import Image
+import os, sys, glob, re
+from PIL import Image, ImageFilter
 
-SRC = sys.argv[1] if len(sys.argv) > 1 else "D:/tmp/cafe-seq"
-WIDTH = int(sys.argv[2]) if len(sys.argv) > 2 else 1100
-DST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "public", "film")
+argv = sys.argv[1:]
 
-os.makedirs(DST, exist_ok=True)
-files = sorted(glob.glob(os.path.join(SRC, "frame-*.png")))
-if not files:
-    print("нет кадров в", SRC)
-    raise SystemExit(1)
 
-total = 0
-for i, f in enumerate(files):
-    im = Image.open(f).convert("RGB")
-    if im.width != WIDTH:
-        im = im.resize((WIDTH, round(im.height * WIDTH / im.width)), Image.LANCZOS)
-    out = os.path.join(DST, f"frame-{i:03d}.webp")
-    # q92: тёмный плавный градиент — худший случай для webp, на q82 он
-    # рассыпается ступеньками и блоками. Кадр всё равно остаётся лёгким.
-    im.save(out, "WEBP", quality=92, method=6)
-    total += os.path.getsize(out)
+def opt(name, default):
+    return argv[argv.index(name) + 1] if name in argv else default
 
-print(f"{len(files)} кадров, {total // 1024} КБ всего, {total // 1024 // len(files)} КБ на кадр")
-print("saved to", os.path.normpath(DST))
+
+SRC = argv[0] if argv and not argv[0].startswith("--") else "D:/tmp/cafe-hi144"
+AUX_SRC = opt("--aux", "")
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "public")
+
+# Ширины плёнок и качество. q92: тёмный плавный градиент — худший случай для
+# webp, на q82 он рассыпается ступеньками и блоками.
+TARGETS = [("film", 1100, 92), ("film-hd", 1600, 90)]
+AUX_WIDTH = 512
+# Глубина округляется до 64 ступеней: без потерь такая карта весит 4 МБ на
+# плёнку, с округлением — 2 МБ, а ступень в два сантиметра сцены сдвигает
+# картинку меньше чем на четверть процента, то есть невидима.
+AUX_LEVELS = 64
+
+
+def pack_film():
+    files = sorted(glob.glob(os.path.join(SRC, "frame-*.png")))
+    if not files:
+        print("нет кадров в", SRC)
+        return
+    for name, width, quality in TARGETS:
+        dst = os.path.join(ROOT, name)
+        os.makedirs(dst, exist_ok=True)
+        total = 0
+        for i, f in enumerate(files):
+            im = Image.open(f).convert("RGB")
+            if im.width != width:
+                im = im.resize((width, round(im.height * width / im.width)), Image.LANCZOS)
+            out = os.path.join(dst, f"frame-{i:03d}.webp")
+            im.save(out, "WEBP", quality=quality, method=6)
+            total += os.path.getsize(out)
+        print(f"[{name}] {len(files)} кадров, {total // 1024} КБ всего, "
+              f"{total // 1024 // len(files)} КБ на кадр, ширина {width}")
+
+
+def pack_aux():
+    """Глубина и номера предметов — данные, а не картинка.
+
+    Отсюда два правила. Красный канал (глубина) сглаживается: туман в Cycles
+    считается стохастически и остаётся чуть шершавым, а шершавая глубина —
+    это дрожащий параллакс. Зелёный (номер предмета) уменьшается ближайшим
+    соседом и жмётся без потерь: любое усреднение породило бы на границе
+    чашки предмет с номером «два с половиной», которого в сцене нет.
+    """
+    files = sorted(glob.glob(os.path.join(AUX_SRC, "aux-*.png")),
+                   key=lambda p: int(re.search(r"(\d+)", os.path.basename(p)).group(1)))
+    if not files:
+        print("нет карт глубины в", AUX_SRC)
+        return
+    dst = os.path.join(ROOT, "film-aux")
+    os.makedirs(dst, exist_ok=True)
+    total = 0
+    for i, f in enumerate(files):
+        im = Image.open(f).convert("RGB")
+        r, g, _ = im.split()
+        r = r.filter(ImageFilter.GaussianBlur(1.1))
+        if im.width != AUX_WIDTH:
+            size = (AUX_WIDTH, round(im.height * AUX_WIDTH / im.width))
+            r = r.resize(size, Image.LANCZOS)
+            g = g.resize(size, Image.NEAREST)
+        step = 256 // AUX_LEVELS
+        r = r.point(lambda v: min(255, round(v / step) * step))
+        out = os.path.join(dst, f"aux-{i:03d}.webp")
+        Image.merge("RGB", (r, g, Image.new("L", r.size, 0))).save(out, "WEBP", lossless=True, method=6)
+        total += os.path.getsize(out)
+    print(f"[film-aux] {len(files)} карт, {total // 1024} КБ всего, "
+          f"{total // 1024 // len(files)} КБ на карту, ширина {AUX_WIDTH}")
+
+
+pack_film()
+if AUX_SRC:
+    pack_aux()
+print("saved to", os.path.normpath(ROOT))

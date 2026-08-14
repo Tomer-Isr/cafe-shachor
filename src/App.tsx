@@ -23,11 +23,28 @@ const hasWebGL2 = () => {
   }
 }
 
+/**
+ * Какую плёнку везти. Кадр 1100 px честно закрывает телефон, но на мониторе
+ * растягивается почти вдвое и сцена выглядит замыленной; кадр 1600 px весит
+ * втрое больше и телефону не нужен. Порог по ширине окна, а не по плотности
+ * пикселей: на ретина-планшете вторая плёнка — это лишние мегабайты в дорогу.
+ */
+const filmBase = () => {
+  const hd = typeof window !== 'undefined' && window.innerWidth >= 900
+  return `${import.meta.env.BASE_URL}${hd ? 'film-hd' : 'film'}/`
+}
+
 export default function App() {
   const [locale, setLocale] = useState<Locale>('he')
   const [paused] = useState(prefersReducedMotion)
   const [gl, setGl] = useState(hasWebGL2)
   const [progress, setProgress] = useState(0)
+  // Плёнка выбирается один раз: менять её на лету значило бы выбросить всё
+  // загруженное и начать качать заново посреди прокрутки.
+  const [base] = useState(filmBase)
+  const [canHover] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(hover: hover)').matches,
+  )
 
   const progressRef = useRef(0)
   const t = COPY[locale]
@@ -71,10 +88,10 @@ export default function App() {
   return (
     <>
       {gl ? (
-        <FilmGL count={FRAME_COUNT} progressRef={progressRef} paused={paused} still={paused}
+        <FilmGL count={FRAME_COUNT} progressRef={progressRef} base={base} paused={paused} still={paused}
                 onFail={() => setGl(false)} />
       ) : (
-        <Film count={FRAME_COUNT} progressRef={progressRef} paused={paused} />
+        <Film count={FRAME_COUNT} progressRef={progressRef} base={base} paused={paused} />
       )}
 
       <div
@@ -93,7 +110,8 @@ export default function App() {
           {gl && !paused && (
             <p className="mt-6 text-[0.78rem] uppercase tracking-[0.18em] text-[#6f675d]"
                style={{ fontFamily: 'var(--font-body)' }}>
-              {t.touchHint}
+              {/* мышь и палец умеют разное, и звать их одинаково — врать */}
+              {canHover ? t.cursorHint : t.touchHint}
             </p>
           )}
         </div>

@@ -34,6 +34,13 @@ RES_Y = int(arg("--ry", "900"))
 HDRI = arg("--hdri", "D:/Claude/projects/cafe-shachor/public/hdri/vault_1k.hdr")
 DEVICE = arg("--device", "auto")  # auto | cpu | optix | cuda
 
+# Вспомогательная карта кадра: глубина + номер предмета в каждом пикселе.
+# Считается тем же прогоном, что и картинка (лучи уже пущены), поэтому стоит
+# почти ничего — а браузер получает от неё то, чего у плоской плёнки нет:
+# знание, что дальше, что ближе и что именно лежит под курсором.
+AUX = arg("--aux", "")            # папка для aux-EXR; пусто — не считать
+INDEX = int(arg("--index", "0"))  # номер кадра, чтобы aux не перетирал сам себя
+
 # Свет вынесен в аргументы: у чёрной глазури форма читается отражениями, а не
 # заливкой, и нужный баланс подбирается прогонами, а не рассуждением.
 KEY = float(arg("--key", "5"))            # окно на восток, основной
@@ -1387,9 +1394,142 @@ def pick_device():
 
 pick_device()
 
+# ── вспомогательная карта: глубина и номера предметов ────────────────────────
+# R — туман (0 у камеры, 1 на дальнем плане), G — номер предмета / 8.
+#
+# Считается вторым проходом в этом же запуске Blender. Сцена собирается ~70 с
+# (зерно, физика, материалы) — дороже самого рендера, поэтому отдельный прогон
+# ради глубины удвоил бы время плёнки. Второй проход по готовой сцене в мелком
+# разрешении и с одним сэмплом стоит секунды.
+#
+# Один сэмпл здесь не экономия, а требование: сглаживание усредняет номера
+# предметов по краям, и на границе чашки появился бы предмет с номером «два с
+# половиной». Глубине и маскам сглаживание не нужно — им нужна честность.
+AUX_W, AUX_H = 640, 361
+AUX_GROUPS = (
+    ("Cup", "Saucer", "Handle"),                       # 1 — чашка с блюдцем
+    ("Coffee", "Stream", "Drop", "Crown", "Splash"),   # 2 — кофе и струя
+    ("Bean",),                                         # 3 — зерно
+    ("Pitcher",),                                      # 4 — питчер
+    ("Tamper",),                                       # 5 — темпер
+    ("Spout",),                                        # 6 — носик машины
+    ("PendantLamp",),                                  # 7 — лампа
+)
+
+def aux_material(name, level):
+    """Плоский светящийся материал: цвет и есть номер предмета."""
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    nt = m.node_tree
+    for n in list(nt.nodes):
+        nt.nodes.remove(n)
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    em = nt.nodes.new("ShaderNodeEmission")
+    em.inputs[0].default_value = (0.0, level, 0.0, 1.0)
+    em.inputs[1].default_value = 1.0
+    nt.links.new(em.outputs[0], out.inputs["Surface"])
+    return m
+
+
+def render_aux():
+    """Второй проход: глубина и номера предметов вместо картинки.
+
+    Номер предмета берётся не из пасса Object Index, а из цвета. Пасс в этом
+    Blender возвращается рваным: примерно половина пикселей внутри предмета
+    приходит нулями, и одинаково при любом числе сэмплов, любом фильтре и на
+    любом устройстве — подсветка чашки выглядела бы изъеденной молью. Плоская
+    заливка светом такого вопроса не оставляет: какой цвет положили, такой и
+    вернулся.
+    """
+    ids = {}
+    for o in bpy.data.objects:
+        for gi, prefixes in enumerate(AUX_GROUPS, start=1):
+            if o.name.startswith(prefixes):
+                o.pass_index = gi
+                ids[o.name] = gi
+                break
+
+    vl = scene.view_layers[0]
+    vl.use_pass_mist = True
+
+    # Красный канал — туман из пасса, зелёный — цвет самой картинки, то есть
+    # свечение, которым покрашены предметы.
+    ng = bpy.data.node_groups.new("Aux", "CompositorNodeTree")
+    ng.interface.new_socket(name="Image", in_out="OUTPUT", socket_type="NodeSocketColor")
+    rl = ng.nodes.new("CompositorNodeRLayers")
+    sep = ng.nodes.new("CompositorNodeSeparateColor")
+    sep.mode = "RGB"
+    ng.links.new(rl.outputs["Image"], sep.inputs[0])
+    comb = ng.nodes.new("CompositorNodeCombineColor")
+    comb.mode = "RGB"
+    ng.links.new(rl.outputs["Mist"], comb.inputs[0])
+    ng.links.new(sep.outputs[1], comb.inputs[1])
+    out = ng.nodes.new("NodeGroupOutput")
+    ng.links.new(comb.outputs[0], out.inputs[0])
+    scene.compositing_node_group = ng
+
+    # Кадр здесь — не картинка, а таблица чисел: любой тонмаппинг сделал бы
+    # глубину неправильной, поэтому цветокоррекция снимается целиком.
+    scene.view_settings.view_transform = "Raw"
+    scene.view_settings.look = "None"
+    scene.view_settings.exposure = 0.0
+    scene.render.resolution_x, scene.render.resolution_y = AUX_W, AUX_H
+    # Туман в Cycles считается стохастически: при одном сэмпле глубина выходит
+    # не числом, а шахматкой из нулей и единиц — со средним в нужной точке, но
+    # непригодной попиксельно. Шестьдесят четыре сэмпла на мелком кадре без
+    # резмытия занимают секунды и дают ровную карту.
+    scene.cycles.samples = int(arg("--aux-samples", "64"))
+    scene.cycles.use_denoising = False
+    scene.cycles.use_adaptive_sampling = False
+    cam.data.dof.use_dof = False  # маски предметов должны быть резкими
+    scene.cycles.max_bounces = 0  # свет здесь не нужен: предметы светятся сами
+
+    # Каждый предмет перекрашивается в свой номер, всё остальное — в чёрный.
+    # Пар при этом убираем совсем: объём размазал бы номера соседей.
+    palette = {i: aux_material(f"AuxID{i}", i / 8.0) for i in range(8)}
+    for o in bpy.data.objects:
+        if o.type != "MESH":
+            continue
+        if o.name.startswith("Steam") or (o.data.materials
+                                          and any(m and m.name.startswith("Steam") for m in o.data.materials)):
+            o.hide_render = True
+            continue
+        o.data.materials.clear()
+        o.data.materials.append(palette[ids.get(o.name, 0)])
+
+    # Мир гасим: HDRI светил бы в фон и подмешивал в номера свой цвет.
+    dark = bpy.data.worlds.new("AuxWorld")
+    dark.use_nodes = True
+    for n in dark.node_tree.nodes:
+        if n.type == "BACKGROUND":
+            n.inputs[1].default_value = 0.0
+    scene.world = dark
+    # Диапазон тумана задаётся уже новому миру — от объектива до задней стены
+    # меньше двух метров, поэтому дефолтные 25 м дали бы почти нули.
+    dark.mist_settings.start = 0.04
+    dark.mist_settings.depth = 1.40
+    dark.mist_settings.falloff = "LINEAR"
+    # Фильтр пикселя сужаем, но не схлопываем. При 0.01 маска предмета выходила
+    # дырявой, как решето: сэмплы не попадали в микроскопическое окно фильтра,
+    # пиксель оставался без веса и получал ноль — «чашка» состояла из чашки
+    # наполовину. Половина пикселя размывает только сам контур.
+    scene.render.filter_size = 0.5
+    # Дизеринг спасает фотографию от полос на градиенте, но здесь он подмешивает
+    # шум в числа: глубина начинает дрожать, номера предметов — рассыпаться.
+    scene.render.dither_intensity = 0.0
+
+    os.makedirs(AUX, exist_ok=True)
+    scene.render.filepath = os.path.join(AUX, f"aux-{INDEX:03d}.png")
+    bpy.ops.render.render(write_still=True)
+    print(f"[scene] aux saved {scene.render.filepath}")
+
+
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 scene.render.filepath = OUT
 scene.render.image_settings.file_format = "PNG"
 print(f"[scene] scroll={SCROLL:.4f} phase={PHASE:.4f} fill={FILL:.2f} flow={FLOW:.2f}")
 bpy.ops.render.render(write_still=True)
 print(f"[scene] saved {OUT}")
+
+if AUX:
+    render_aux()
