@@ -258,8 +258,8 @@ interface CupBox {
 
 export function FilmGL({ count, progressRef, base, auxBase, paused = false, still = false, onFail }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null)
-  const frames = useRef<(HTMLImageElement | null)[]>([])
-  const auxes = useRef<(HTMLImageElement | null)[]>([])
+  const frames = useRef<(ImageBitmap | null)[]>([])
+  const auxes = useRef<(ImageBitmap | null)[]>([])
   const current = useRef(0)
   const [ready, setReady] = useState(0)
   const [fallback, setFallback] = useState(false)
@@ -282,17 +282,17 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     let cancelled = false
     let loaded = 0
 
-    const load = (src: string, keep: (img: HTMLImageElement) => void) =>
-      new Promise<void>((resolve) => {
-        const img = new Image()
-        img.decoding = 'async'
-        img.onload = () => {
-          keep(img)
-          resolve()
-        }
-        img.onerror = () => resolve()
-        img.src = src
-      })
+    // Кадры едут как ImageBitmap, а не как <img>: картинку декодирует рабочий
+    // поток, а в видеопамять она уходит готовым буфером. На прокрутке, где
+    // кадр заливается по шестьдесят раз в секунду, разница заметная.
+    const load = (src: string, keep: (img: ImageBitmap) => void) =>
+      fetch(src)
+        .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('нет кадра'))))
+        // Переворот задаём здесь: флаг UNPACK_FLIP_Y_WEBGL на ImageBitmap не
+        // действует, и без этого вся сцена встаёт вверх ногами.
+        .then((blob) => createImageBitmap(blob, { imageOrientation: 'flipY' }))
+        .then(keep)
+        .catch(() => {})
 
     const loadBatch = async (start: number) => {
       if (cancelled || start >= count) return
@@ -407,11 +407,10 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     gl.enableVertexAttribArray(loc)
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0)
 
-    // У WebGL начало координат текстуры внизу, у картинки — вверху. Без этого
-    // флага кадр загружается зеркально по вертикали, и вся сцена встаёт вверх
-    // ногами. Координаты ряби живут в том же UV-пространстве (y снизу),
-    // поэтому их пересчитывать не нужно.
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true)
+    // Кадры приходят уже перевёрнутыми (imageOrientation: 'flipY' при
+    // создании ImageBitmap), поэтому здесь переворачивать нечего: строка ноль
+    // текстуры — это низ кадра, как и ждёт UV-пространство WebGL.
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
 
     const makeTex = (unit: number, smooth: boolean) => {
       const tex = gl.createTexture()
@@ -465,7 +464,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     let probeAt = 0
 
     /** Разбор карты глубины: маска под курсором и рамка чашки. */
-    const readProbe = (img: HTMLImageElement, index: number) => {
+    const readProbe = (img: ImageBitmap, index: number) => {
       if (!pctx || probeFor === index) return
       // На быстрой прокрутке кадр меняется каждый раз, а перебор четырнадцати
       // тысяч пикселей на слабом телефоне стоит заметно дороже, чем польза от
@@ -495,8 +494,9 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
       const half = (maxX - minX) / 2 / PROBE_W
       cupBox = {
         x: (minX + maxX) / 2 / PROBE_W,
-        // верхняя кромка чашки: пар должен подниматься от неё, а не из центра
-        y: 1 - minY / PROBE_H,
+        // Верхняя кромка чашки — пар поднимается от неё, а не из центра.
+        // Карта уже перевёрнута, поэтому верх кадра — это последние строки.
+        y: maxY / PROBE_H,
         half: Math.max(half, 0.02),
         // крупно ли она стоит в кадре — по этому включается пар без курсора
         big: Math.min(1, Math.max(0, (area / (PROBE_W * PROBE_H) - 0.07) / 0.16)),
@@ -507,7 +507,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     const objectAt = (u: number, v: number) => {
       if (!probeData) return 0
       const x = Math.round(u * (PROBE_W - 1))
-      const y = Math.round((1 - v) * (PROBE_H - 1))
+      const y = Math.round(v * (PROBE_H - 1))
       if (x < 0 || y < 0 || x >= PROBE_W || y >= PROBE_H) return 0
       const g = probeData[(y * PROBE_W + x) * 4 + 1]
       return Math.round((g / 255) * 8)
@@ -522,7 +522,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
       return [(u - 0.5) * sx + 0.5, (v - 0.5) * sy + 0.5] as const
     }
 
-    const nearest = (list: (HTMLImageElement | null)[], i: number) => {
+    const nearest = (list: (ImageBitmap | null)[], i: number) => {
       if (list[i]) return list[i]
       for (let d = 1; d < list.length; d++) {
         if (list[i - d]) return list[i - d]
@@ -536,8 +536,8 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     // выделяет хранилище под 1600×902; texSubImage2D пишет в уже выделенное,
     // и на прокрутке это заметно дешевле.
     const texSize = new WeakMap<WebGLTexture, string>()
-    const upload = (tex: WebGLTexture, img: HTMLImageElement) => {
-      const key = `${img.naturalWidth}x${img.naturalHeight}`
+    const upload = (tex: WebGLTexture, img: ImageBitmap) => {
+      const key = `${img.width}x${img.height}`
       if (texSize.get(tex) === key) {
         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGB, gl.UNSIGNED_BYTE, img)
       } else {
@@ -547,8 +547,8 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     }
 
     let raf = 0
-    let uploadedFrame: HTMLImageElement | null = null
-    let uploadedAux: HTMLImageElement | null = null
+    let uploadedFrame: ImageBitmap | null = null
+    let uploadedAux: ImageBitmap | null = null
     const rippleData = new Float32Array(MAX_RIPPLES * 4)
     const startedAt = performance.now()
 
@@ -566,7 +566,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
         gl.bindTexture(gl.TEXTURE_2D, texFrame)
         upload(texFrame, img)
         uploadedFrame = img
-        gl.uniform2f(uFrame, img.naturalWidth, img.naturalHeight)
+        gl.uniform2f(uFrame, img.width, img.height)
       }
 
       const auxImg = nearest(auxes.current, index)
@@ -590,8 +590,8 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
       gl.uniform1f(uLive, c.live)
 
       const now = performance.now()
-      const fw = img.naturalWidth
-      const fh = img.naturalHeight
+      const fw = img.width
+      const fh = img.height
 
       // Что под курсором. Смотрим по невозмущённой точке кадра: параллакс
       // сдвигает картинку на доли процента, а промах по предмету стоил бы
