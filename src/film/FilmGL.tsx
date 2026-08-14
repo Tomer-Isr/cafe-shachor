@@ -85,8 +85,17 @@ uniform float hoverAmt;     // сила наведения, нарастает �
 uniform vec2 hit;           // x — номер предмета по нажатию, y — возраст удара в секундах
 uniform float time;
 
-/** насколько далеко предметы расходятся за курсором: разница глубин × это */
-const float PARALLAX = 0.075;
+/**
+ * Насколько далеко предметы расходятся за курсором: разница глубин × это.
+ * Было 0.075 — на этой величине чашка разваливалась (см. depthSoft ниже).
+ * Величина заодно держится в пределах компенсирующего зума (1.045 — то есть
+ * 2,2% с каждой стороны), иначе смещение оголяет край кадра.
+ */
+const float PARALLAX = 0.04;
+/** дальше этой разницы глубин смещение не растёт — страховка от того же */
+const float MAX_DEPTH_GAP = 0.4;
+/** уровень mip-цепочки, с которого читается глубина для смещения */
+const float DEPTH_LOD = 4.0;
 
 // Простой value-noise и фрактальная сумма: пар должен клубиться, а не ползти
 // однородным пятном.
@@ -124,6 +133,25 @@ float depthAt(vec2 t) {
   return hasAux > 0.5 ? texture(auxSmooth, hold(t)).r : 0.5;
 }
 
+/**
+ * Глубина для смещения читается СГЛАЖЕННОЙ — с четвёртого уровня mip-цепочки
+ * (карта 512 px, значит смещение считается по картинке в 32 px).
+ *
+ * По резкой карте на силуэте предмета глубина прыгает сразу на всю разницу:
+ * чашка стоит на 0,4, стена за ней на 0,95. Соседние пиксели по разные
+ * стороны контура уезжают в противоположные стороны на десятки пикселей — и
+ * контур раздваивается: «стенка выходит из стенки», ручка обрывается, край
+ * блюдца превращается в пилу. Ехать должны плоскости целиком, а не края
+ * предметов относительно самих себя, поэтому смещение берётся по мягкому
+ * полю глубины, а сама картинка при этом остаётся резкой.
+ *
+ * Мягкость выбрана по нижней границе: mip 3 ещё оставлял «расчёску» на
+ * кромке чашки, mip 5 уже заметно раздувал её форму.
+ */
+float depthSoft(vec2 t) {
+  return hasAux > 0.5 ? textureLod(auxSmooth, hold(t), DEPTH_LOD).r : 0.5;
+}
+
 /** номер предмета в точке кадра: 0 — фон, 1 — чашка, 2 — кофе… */
 float objectAt(vec2 t) {
   return hasAux > 0.5 ? texture(auxSharp, hold(t)).g * 8.0 : 0.0;
@@ -156,15 +184,18 @@ void main() {
   // ближе неё, поедет в одну сторону, всё, что дальше — в другую: так ведёт
   // себя настоящая сцена, когда камера чуть сдвигается вбок.
   vec2 aim = (cursorUV - 0.5) * 2.0 * cursorLive;
-  float focus = depthAt(coverUV(cursorUV));
+  float focus = depthSoft(coverUV(cursorUV));
 
   vec2 t = base;
   if (hasAux > 0.5) {
-    // Смещение зависит от глубины в точке, которая после смещения и окажется
-    // под этим пикселем — поэтому считаем в три приближения.
-    for (int i = 0; i < 3; i++) {
-      t = base + aim * PARALLAX * (depthAt(t) - focus);
-    }
+    // Один проход, без уточняющих итераций. Прежде их было три — они искали
+    // точку, которая после смещения окажется ровно под этим пикселем, но у
+    // края предмета такой поиск не сходится, а начинает прыгать между двумя
+    // ответами, и кромка чашки покрывалась поперечной «расчёской». Одна
+    // выборка даёт заведомо непрерывное поле смещения; неточность на доли
+    // пикселя глаз не различает, а разрывы — различает сразу.
+    float gap = clamp(depthSoft(base) - focus, -MAX_DEPTH_GAP, MAX_DEPTH_GAP);
+    t = base + aim * PARALLAX * gap;
   } else {
     t = base - aim * 0.012;
   }
@@ -181,8 +212,10 @@ void main() {
     float age = ripples[i].z;
     float front = age * 0.42;             // скорость фронта
     float band = dist - front;
-    // ближнее к камере качается сильнее — дальний план почти стоит
-    float near = mix(1.0, clamp(1.25 - depthAt(t), 0.2, 1.0), hasAux);
+    // Ближнее к камере качается сильнее — дальний план почти стоит. Глубина
+    // здесь тоже мягкая: по резкой карте волна рвала бы контур предмета, через
+    // который проходит, ровно так же, как это делал параллакс.
+    float near = mix(1.0, clamp(1.25 - depthSoft(t), 0.2, 1.0), hasAux);
     float ring = exp(-band * band * 900.0) * exp(-age * 2.2) * exp(-dist * 1.6) * near;
     t += normalize(d + 1e-6) * ring * 0.02;
     glow += ring;
@@ -349,7 +382,12 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
       cursor.current.tv = 0.5
     }
     const onDown = (e: PointerEvent) => {
-      move(e.clientX, e.clientY)
+      // Палец курсором не работает. Прокрутка на телефоне начинается с
+      // касания, поэтому прежде сцена считала точку касания «курсором» и
+      // держала её там навсегда: параллакс включался на весь экран от
+      // случайной точки и никогда не гас. Волна от нажатия остаётся — она и
+      // задумана как отклик именно на касание.
+      if (e.pointerType !== 'touch') move(e.clientX, e.clientY)
       // Точку удара пересчитаем в координаты кадра в цикле отрисовки, где
       // известен cover-фит; здесь запоминаем только момент и место на канве.
       const r = el.getBoundingClientRect()
@@ -412,19 +450,22 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     // текстуры — это низ кадра, как и ждёт UV-пространство WebGL.
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
 
-    const makeTex = (unit: number, smooth: boolean) => {
+    // mip: карте глубины нужна уменьшенная копия — по ней шейдер считает
+    // смещение, чтобы силуэты не разрывались. Кадру и маске номеров она не
+    // нужна: первый читается один в один, вторая — строго ближайшим пикселем.
+    const makeTex = (unit: number, smooth: boolean, mip = false) => {
       const tex = gl.createTexture()
       gl.activeTexture(gl.TEXTURE0 + unit)
       gl.bindTexture(gl.TEXTURE_2D, tex)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
       const f = smooth ? gl.LINEAR : gl.NEAREST
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mip ? gl.LINEAR_MIPMAP_LINEAR : f)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f)
       return tex
     }
     const texFrame = makeTex(0, true)
-    const texAuxSmooth = makeTex(1, true)
+    const texAuxSmooth = makeTex(1, true, true)
     const texAuxSharp = makeTex(2, false)
     gl.uniform1i(gl.getUniformLocation(prog, 'frame'), 0)
     gl.uniform1i(gl.getUniformLocation(prog, 'auxSmooth'), 1)
@@ -574,6 +615,10 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
         gl.activeTexture(gl.TEXTURE1)
         gl.bindTexture(gl.TEXTURE_2D, texAuxSmooth)
         upload(texAuxSmooth, auxImg)
+        // Уменьшенные копии пересобираются вместе с картой: без них текстура
+        // с mip-фильтром считается неполной и все выборки приходят чёрными.
+        // Карта 512×289 — на прокрутке это заметно дешевле самой заливки.
+        gl.generateMipmap(gl.TEXTURE_2D)
         gl.activeTexture(gl.TEXTURE2)
         gl.bindTexture(gl.TEXTURE_2D, texAuxSharp)
         upload(texAuxSharp, auxImg)
