@@ -16,34 +16,24 @@
  *
  * `screens` каждого блока подобраны так, чтобы их доли совпадали с этими
  * границами — иначе текст про обжарку встанет над наливом.
+ *
+ * Подложек под текст здесь нет намеренно. Полупрозрачная плашка превращает
+ * сцену в картинку за стеклом: кадр перестаёт быть кадром и становится обоями.
+ * Текст лежит прямо на сцене, а читаемость держится тенью самих букв.
  */
 interface Props {
   children: React.ReactNode
   /** сколько экранов прокрутки занимает блок */
   screens: number
-  /**
-   * Насколько притушить сцену под этим блоком. Короткому титру подложка не
-   * нужна — он читается по живому кадру; длинному списку нужна, иначе строки
-   * спорят с картинкой. Затемнение локальное: сцена не выключается на всей
-   * странице, а приглушается там, где идёт плотный текст.
-   */
-  dim?: number
   /** держать содержимое по центру экрана, пока идёт блок */
   hold?: boolean
   className?: string
   id?: string
 }
 
-export function Block({ children, screens, dim = 0, hold = true, className = '', id }: Props) {
+export function Block({ children, screens, hold = true, className = '', id }: Props) {
   return (
     <section id={id} className="relative" style={{ height: `${screens * 100}svh` }}>
-      {dim > 0 && (
-        <div
-          className="pointer-events-none sticky top-0 h-[100svh] w-full bg-[#0a0908]"
-          style={{ opacity: dim, marginBottom: '-100svh' }}
-          aria-hidden="true"
-        />
-      )}
       <div className={hold ? `sticky top-0 flex min-h-[100svh] items-center ${className}` : className}>
         {children}
       </div>

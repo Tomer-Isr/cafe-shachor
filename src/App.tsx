@@ -118,7 +118,7 @@ export default function App() {
         <Film count={FRAME_COUNT} progressRef={progressRef} base={base} paused={paused} />
       )}
 
-      <div className="relative z-[2]">
+      <div className="relative z-[2] on-scene">
         {/* 1. общий план — имя и манифест */}
         <Block screens={BLOCKS.hero} className={column}>
           <div className="w-full max-w-[34ch]" style={{ textAlign: t.dir === 'rtl' ? 'right' : 'left', marginInlineStart: 'auto' }}>
@@ -148,7 +148,7 @@ export default function App() {
         </Block>
 
         {/* 2. зерно — обжарка */}
-        <Block screens={BLOCKS.roast} dim={0.18} className={column}>
+        <Block screens={BLOCKS.roast} className={column}>
           <div className="w-full max-w-[38ch]" style={{ textAlign: t.dir === 'rtl' ? 'right' : 'left', marginInlineStart: 'auto' }}>
             <Lines locale={locale} className="t-caption mb-5">02</Lines>
             <Lines locale={locale} delay={0.08}>
@@ -162,22 +162,24 @@ export default function App() {
         </Block>
 
         {/* 3. налив — меню */}
-        <Block screens={BLOCKS.menu} dim={0.62} hold={false}>
-          <div className="mx-auto max-w-6xl px-6 pt-[18svh] sm:px-10">
+        <Block screens={BLOCKS.menu} hold={false} className={`${column} block pt-[18svh]`}>
+          <div className="ms-auto w-full max-w-[52ch]">
             <Lines locale={locale} className="t-caption mb-5">03</Lines>
             <Lines locale={locale} delay={0.08}>
               <h2 className="t-h2">{t.actThreeTitle}</h2>
             </Lines>
-            <Lines locale={locale} delay={0.18} className="t-body mt-3 max-w-xl text-[#c9c0b3]">
+            <Lines locale={locale} delay={0.18} className="t-body mt-3 text-[#c9c0b3]">
               {t.actThreeText}
             </Lines>
+            <Menu t={t} locale={locale} anchorRef={menuRef} />
           </div>
-          <Menu t={t} locale={locale} anchorRef={menuRef} />
         </Block>
 
         {/* 4. взгляд внутрь — место */}
-        <Block screens={BLOCKS.space} dim={0.6} hold={false}>
-          <Space t={t} />
+        <Block screens={BLOCKS.space} hold={false} className={`${column} block pt-[14svh]`}>
+          <div className="ms-auto w-full max-w-[46ch]">
+            <Space t={t} />
+          </div>
         </Block>
 
         {/* 5. финал — приглашение */}
@@ -198,11 +200,10 @@ export default function App() {
           </div>
         </Block>
 
-        {/* хвост: плёнка отыграла и стоит на последнем кадре. Не чёрный блок —
-            сцена продолжает просвечивать, поэтому переход идёт градиентом. */}
-        <div className="relative">
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-[40svh] bg-gradient-to-b from-transparent to-[#0a0908]" aria-hidden="true" />
-          <div className="relative bg-[#0a0908]/92 pt-[24svh] backdrop-blur-[2px]">
+        {/* Хвост: плёнка отыграла и стоит на последнем кадре. Ни заливки, ни
+            градиента — текст лежит на той же сцене, что и всё остальное. */}
+        <div className={`${column} on-scene`}>
+          <div className="ms-auto w-full max-w-[52ch]">
             <Booking t={t} locale={locale} />
             <Visit t={t} />
             <Footer t={t} />
