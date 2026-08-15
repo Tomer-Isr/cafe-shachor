@@ -242,17 +242,21 @@ void main() {
   if (steamAmt > 0.01 && cup.z > 0.001) {
     vec2 q = (t - cup.xy) / cup.z;
     q.x *= frameAspect;
-    if (q.y > -0.15 && q.y < 3.4) {
-      float rise = q.y + 0.15;
-      float spread = 0.42 + rise * 0.55;     // чем выше, тем шире
-      float across = exp(-pow(q.x / spread, 2.0));
-      float fade = smoothstep(0.0, 0.35, rise) * exp(-rise * 0.85);
-      float n = fbm(vec2(q.x * 2.6, q.y * 1.7 - time * 0.42));
-      float m = fbm(vec2(q.x * 5.1 + 7.3, q.y * 3.0 - time * 0.63));
-      // Фрактальный шум колеблется у половины и почти не доходит до единицы;
-      // прежний порог 0.42…0.95 срезал клубы почти целиком, и пар существовал
-      // только в коде.
-      float puff = smoothstep(0.34, 0.72, n * 0.6 + m * 0.4);
+    if (q.y > -0.05 && q.y < 2.6) {
+      float rise = q.y + 0.05;
+      // Струйка не поднимается отвесной колонной: она уводится вбок тем
+      // сильнее, чем выше, и сам увод медленно качается. Без этого пар читается
+      // столбом дыма из трубы, а не воздухом над чашкой.
+      float drift = sin(rise * 1.7 + time * 0.55) * 0.20 * rise;
+      float across = exp(-pow((q.x - drift) / (0.32 + rise * 0.50), 2.0));
+      // Появляется вплотную к кромке и гаснет вдвое ближе прежнего: высокий
+      // пар над маленькой чашкой выглядит спецэффектом.
+      float fade = smoothstep(0.0, 0.12, rise) * exp(-rise * 1.05);
+      float n = fbm(vec2(q.x * 3.2, q.y * 2.0 - time * 0.50));
+      float m = fbm(vec2(q.x * 6.4 + 7.3, q.y * 3.6 - time * 0.76));
+      // Порог мягкий: жёсткий давал ватные хлопья с рваным краем, а пар — это
+      // плотность, а не форма.
+      float puff = smoothstep(0.28, 0.74, n * 0.62 + m * 0.38);
       steam = puff * across * fade * steamAmt;
     }
   }
@@ -264,7 +268,9 @@ void main() {
   rgb += vec3(0.42, 0.32, 0.20) * same * (0.05 + luma * 0.75) * 0.38;
   rgb += vec3(0.55, 0.42, 0.30) * glow * 0.30;
   rgb += vec3(0.60, 0.48, 0.34) * abs(pulse) * 0.22;
-  rgb += vec3(0.82, 0.76, 0.70) * steam * 0.5;
+  // Пар не белый и не плотный: над тёмной сценой даже половинная яркость
+  // читается привидением. Он лишь подсвечивает воздух.
+  rgb += vec3(0.74, 0.70, 0.66) * steam * 0.40;
 
   color = vec4(rgb, 1.0);
 }`
@@ -498,6 +504,11 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     probe.width = PROBE_W
     probe.height = PROBE_H
     const pctx = probe.getContext('2d', { willReadFrequently: true })
+    // Без этого карта номеров уменьшается со сглаживанием, и на границе
+    // питчера (номер 4) с фоном (0) появляется промежуточное значение, равное
+    // номеру чашки. Рамка чашки растягивалась до питчера, и пар поднимался не
+    // над кромкой, а посреди кадра — «привидение».
+    if (pctx) pctx.imageSmoothingEnabled = false
     let probeFor = -1
     let probeData: Uint8ClampedArray | null = null
     let cupBox: CupBox = { x: 0.5, y: 0.5, half: 0, big: 0 }
@@ -516,22 +527,27 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
       probeFor = index
       pctx.drawImage(img, 0, 0, PROBE_W, PROBE_H)
       probeData = pctx.getImageData(0, 0, PROBE_W, PROBE_H).data
-      let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, area = 0
+      const xs: number[] = []
+      const ys: number[] = []
       for (let y = 0; y < PROBE_H; y++) {
         for (let x = 0; x < PROBE_W; x++) {
           const g = probeData[(y * PROBE_W + x) * 4 + 1]
-          if (Math.abs(g - (ID_CUP * 255) / 8) > 8) continue
-          area += 1
-          if (x < minX) minX = x
-          if (x > maxX) maxX = x
-          if (y < minY) minY = y
-          if (y > maxY) maxY = y
+          if (Math.abs(g - (ID_CUP * 255) / 8) > 5) continue
+          xs.push(x)
+          ys.push(y)
         }
       }
-      if (area < 12) {
+      if (xs.length < 12) {
         cupBox = { x: 0.5, y: 0.5, half: 0, big: 0 }
         return
       }
+      // Рамка считается по перцентилям, а не по крайним точкам: одиночный
+      // пиксель на другом конце кадра — а он находится, край маски никогда не
+      // бывает идеально чистым — растягивал бы её через полкадра.
+      xs.sort((a, b) => a - b)
+      ys.sort((a, b) => a - b)
+      const at = (arr: number[], q: number) => arr[Math.min(arr.length - 1, Math.floor(arr.length * q))]
+      const minX = at(xs, 0.02), maxX = at(xs, 0.98), maxY = at(ys, 0.98)
       const half = (maxX - minX) / 2 / PROBE_W
       cupBox = {
         x: (minX + maxX) / 2 / PROBE_W,
@@ -540,7 +556,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
         y: maxY / PROBE_H,
         half: Math.max(half, 0.02),
         // крупно ли она стоит в кадре — по этому включается пар без курсора
-        big: Math.min(1, Math.max(0, (area / (PROBE_W * PROBE_H) - 0.07) / 0.16)),
+        big: Math.min(1, Math.max(0, (xs.length / (PROBE_W * PROBE_H) - 0.07) / 0.16)),
       }
     }
 
