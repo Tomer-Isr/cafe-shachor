@@ -2,32 +2,33 @@ import { useEffect, useRef, useState } from 'react'
 import { COPY, type Locale } from './content/copy'
 import { Film } from './film/Film'
 import { FilmGL } from './film/FilmGL'
-import { Booking, Footer, Hero, Menu, Space, Ticker, Visit } from './ui/Sections'
+import { Block } from './ui/Block'
+import { Lines } from './ui/Lines'
+import { BeanBlock, Booking, Footer, Menu, Space, Visit } from './ui/Sections'
 
 /**
- * Страница собрана из двух частей на одной сквозной прокрутке.
+ * Сцена — фон всей страницы, а не пролог с контентом под ним.
  *
- * Пролог — скролл-плёнка из Cycles: четыре экрана прокрутки отыгрывают все 144
- * кадра, поверх идут три титра. Маршрут камеры размечен в `render/scene.py`:
- * общий план (кадры 0–28), сближение и зерно (29–62), налив (63–106), взгляд
- * внутрь чашки (107–143).
+ * Плёнка идёт по общей прокрутке, поэтому каждый блок страницы приходится на
+ * свой участок маршрута камеры (`render/scene.py`):
  *
- * Дальше плёнка кончилась — она остаётся стоять на последнем кадре, притухает
- * под вуалью и передаёт эстафету контенту. Так главные кадры плёнки, налив и
- * «чёрное зеркало», не закрыты текстом: ради них она и снималась.
+ *   0.00–0.20  общий план, пустая чашка     → имя и манифест
+ *   0.20–0.44  сближение, россыпь зерна     → обжарка
+ *   0.44–0.74  налив                        → меню
+ *   0.74–0.90  взгляд внутрь чашки          → место
+ *   0.90–1.00  финал, кадр раскрывается     → приглашение
+ *
+ * Внутри блока камера почти стоит — так писалась раскадровка, — поэтому текст
+ * ложится на спокойный кадр, а смена темы совпадает с движением камеры.
+ *
+ * После пятого блока плёнка отыграла и стоит на последнем кадре: дальше идут
+ * бронь, часы и подвал по притушенной сцене. Фон не выключается нигде.
  */
 const FRAME_COUNT = 144
-/** сколько экранов прокрутки занимает пролог целиком */
-const PROLOGUE_SCREENS = 4.5
-/**
- * Какую долю пролога занимает сама плёнка. Остаток — пауза на финальном кадре.
- *
- * Считать надо с поправкой на то, что контент виден снизу за целый экран до
- * конца пролога: он выезжает в кадр, пока сцена ещё идёт. Поэтому плёнка
- * должна доигрывать заметно раньше — тогда налив и отъезд камеры зритель
- * видит на чистом экране, а не под наползающим чёрным блоком.
- */
-const FILM_SPAN = 0.62
+
+/** Блоки: доля высоты = доля маршрута камеры. Сумма — зона, где плёнка идёт. */
+const BLOCKS = { hero: 2, roast: 2.4, menu: 3, space: 1.6, invite: 1.4 }
+const FILM_SCREENS = Object.values(BLOCKS).reduce((a, b) => a + b, 0)
 
 const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -47,12 +48,9 @@ const hasWebGL2 = () => {
  * замыленной — а канва равна ширине окна, помноженной на плотность пикселей
  * (не выше 1.5). Отсюда три ширины под три класса экранов:
  *
- *   до 900   — телефон, канва редко больше 600 px: хватает 1100, и это 5 МБ;
- *   900-1400 — ноутбук, канва до 2100: 1600 px, 11 МБ;
- *   от 1400  — широкий монитор, канва до 2560 и выше: 2400 px, 14 МБ.
- *
- * Порог по ширине окна, а не по плотности пикселей: на ретина-планшете крупная
- * плёнка — это лишние мегабайты в дорогу при неразличимой разнице.
+ *   до 900   — телефон, канва редко больше 600 px: хватает 1100, и это 5,8 МБ;
+ *   900-1400 — ноутбук, канва до 2100: 1600 px, 13,5 МБ;
+ *   от 1400  — широкий монитор, канва до 2560 и выше: 2400 px, 14,2 МБ.
  */
 const filmBase = () => {
   const w = typeof window !== 'undefined' ? window.innerWidth : 0
@@ -66,14 +64,7 @@ export default function App() {
   const [locale, setLocale] = useState<Locale>('he')
   const [paused] = useState(prefersReducedMotion)
   const [gl, setGl] = useState(hasWebGL2)
-  // Плёнка выбирается один раз: менять её на лету значило бы выбросить всё
-  // загруженное и начать качать заново посреди прокрутки.
   const [base] = useState(filmBase)
-
-  /** какой из трёх титров пролога показан */
-  const [act, setAct] = useState<0 | 1 | 2>(0)
-  /** насколько фон притушен под контентом */
-  const [veil, setVeil] = useState(0)
 
   const progressRef = useRef(0)
   const menuRef = useRef<HTMLElement | null>(null)
@@ -90,21 +81,11 @@ export default function App() {
     const onScroll = () => {
       cancelAnimationFrame(raf)
       raf = requestAnimationFrame(() => {
-        const screen = window.innerHeight
-        const prologue = screen * PROLOGUE_SCREENS
-        const y = window.scrollY
-
-        // Плёнка привязана к прологу, а не ко всей странице: иначе кадры
-        // размазались бы по контенту и на первом экране почти не двигались.
-        const p = clamp(y / (prologue * FILM_SPAN))
-        progressRef.current = p
-        setAct(p < 0.34 ? 0 : p < 0.72 ? 1 : 2)
-
-        // Вуаль привязана не к доле пролога, а к моменту, когда контент реально
-        // показался снизу: экран до конца пролога. Прежде она начиналась с двух
-        // третей, и финал плёнки — налив и отъезд камеры — зритель смотрел уже
-        // сквозь черноту.
-        setVeil(clamp((y - (prologue - screen)) / (screen * 0.85)))
+        // Плёнка отыгрывает за зону блоков. Последний кадр приходится на конец
+        // пятого блока — то есть когда его низ дошёл до низа экрана, а не когда
+        // страница целиком доскроллена: дальше идёт хвост с бронью и часами.
+        const travel = window.innerHeight * (FILM_SCREENS - 1)
+        progressRef.current = clamp(window.scrollY / travel)
       })
     }
     onScroll()
@@ -124,6 +105,10 @@ export default function App() {
 
   const toMenu = () => menuRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 
+  // Текст всегда с той стороны, где в кадре пусто: предмет стоит слева, значит
+  // колонка справа — и в иврите тоже, поэтому отступ физический, не логический.
+  const column = 'w-full px-6 sm:px-10 md:pl-[50%] md:pr-12 lg:pr-20'
+
   return (
     <>
       {gl ? (
@@ -133,26 +118,96 @@ export default function App() {
         <Film count={FRAME_COUNT} progressRef={progressRef} base={base} paused={paused} />
       )}
 
-      {/* фон не выключается, а притухает: сцена продолжает жить под контентом */}
-      <div
-        className="pointer-events-none fixed inset-0 z-[1] bg-[#0a0908]"
-        style={{ opacity: veil * 0.88 }}
-        aria-hidden="true"
-      />
-
       <div className="relative z-[2]">
-        {/* пролог: плёнка под тремя титрами */}
-        <Hero t={t} onMenu={toMenu} act={act} screens={PROLOGUE_SCREENS} />
+        {/* 1. общий план — имя и манифест */}
+        <Block screens={BLOCKS.hero} className={column}>
+          <div className="w-full max-w-[34ch]" style={{ textAlign: t.dir === 'rtl' ? 'right' : 'left', marginInlineStart: 'auto' }}>
+            <Lines locale={locale} className="t-caption mb-5">{t.heroFact}</Lines>
+            <Lines locale={locale} delay={0.1}>
+              <h1 className="t-display">{t.brand}</h1>
+            </Lines>
+            <Lines locale={locale} delay={0.22} className="mt-4 text-xl text-[#c9c0b3] sm:text-2xl">
+              {t.heroLine}
+            </Lines>
+            <div className="mt-9 flex flex-wrap items-center gap-3">
+              <button
+                onClick={toMenu}
+                className="bg-[var(--accent)] px-7 py-3.5 text-[15px] font-medium text-[#100a06] transition hover:brightness-110 active:scale-[.98]"
+              >
+                {t.ctaMenu}
+              </button>
+              <a
+                href="#book"
+                className="border border-[rgba(236,230,220,.28)] px-7 py-3.5 text-[15px] text-[#ece6dc] transition hover:border-[rgba(236,230,220,.6)]"
+              >
+                {t.ctaBook}
+              </a>
+            </div>
+            <p className="t-caption mt-10 hidden md:block">{t.cursorHint}</p>
+          </div>
+        </Block>
 
-        {/* дальше обычная страница по притушенному фону */}
-        <main className="bg-[#0a0908]">
-          <Ticker t={t} />
+        {/* 2. зерно — обжарка */}
+        <Block screens={BLOCKS.roast} dim={0.18} className={column}>
+          <div className="w-full max-w-[38ch]" style={{ textAlign: t.dir === 'rtl' ? 'right' : 'left', marginInlineStart: 'auto' }}>
+            <Lines locale={locale} className="t-caption mb-5">02</Lines>
+            <Lines locale={locale} delay={0.08}>
+              <h2 className="t-h2">{t.actTwoTitle}</h2>
+            </Lines>
+            <Lines locale={locale} delay={0.2} className="t-body mt-4 text-[#c9c0b3]">
+              {t.actTwoText}
+            </Lines>
+            <BeanBlock t={t} locale={locale} bare />
+          </div>
+        </Block>
+
+        {/* 3. налив — меню */}
+        <Block screens={BLOCKS.menu} dim={0.62} hold={false}>
+          <div className="mx-auto max-w-6xl px-6 pt-[18svh] sm:px-10">
+            <Lines locale={locale} className="t-caption mb-5">03</Lines>
+            <Lines locale={locale} delay={0.08}>
+              <h2 className="t-h2">{t.actThreeTitle}</h2>
+            </Lines>
+            <Lines locale={locale} delay={0.18} className="t-body mt-3 max-w-xl text-[#c9c0b3]">
+              {t.actThreeText}
+            </Lines>
+          </div>
           <Menu t={t} locale={locale} anchorRef={menuRef} />
+        </Block>
+
+        {/* 4. взгляд внутрь — место */}
+        <Block screens={BLOCKS.space} dim={0.6} hold={false}>
           <Space t={t} />
-          <Booking t={t} locale={locale} />
-          <Visit t={t} />
-          <Footer t={t} />
-        </main>
+        </Block>
+
+        {/* 5. финал — приглашение */}
+        <Block screens={BLOCKS.invite} className={column}>
+          <div className="w-full max-w-[32ch]" style={{ textAlign: t.dir === 'rtl' ? 'right' : 'left', marginInlineStart: 'auto' }}>
+            <Lines locale={locale}>
+              <h2 className="t-display">{t.brand}</h2>
+            </Lines>
+            <Lines locale={locale} delay={0.15} className="t-body mt-4 text-[#c9c0b3]">
+              {t.spaceText}
+            </Lines>
+            <a
+              href="#book"
+              className="mt-8 inline-block bg-[var(--accent)] px-7 py-3.5 text-[15px] font-medium text-[#100a06] transition hover:brightness-110"
+            >
+              {t.ctaBook}
+            </a>
+          </div>
+        </Block>
+
+        {/* хвост: плёнка отыграла и стоит на последнем кадре. Не чёрный блок —
+            сцена продолжает просвечивать, поэтому переход идёт градиентом. */}
+        <div className="relative">
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-[40svh] bg-gradient-to-b from-transparent to-[#0a0908]" aria-hidden="true" />
+          <div className="relative bg-[#0a0908]/92 pt-[24svh] backdrop-blur-[2px]">
+            <Booking t={t} locale={locale} />
+            <Visit t={t} />
+            <Footer t={t} />
+          </div>
+        </div>
       </div>
 
       <div className="fixed bottom-4 start-4 z-[3] flex gap-1 text-xs">

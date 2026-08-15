@@ -146,15 +146,17 @@ export function Ticker({ t }: { t: Copy }) {
   )
 }
 
-export function BeanBlock({ t, locale }: { t: Copy; locale: Locale }) {
+export function BeanBlock({ t, locale, bare = false }: { t: Copy; locale: Locale; bare?: boolean }) {
   const bean = BEAN_OF_WEEK[locale]
   const fresh = beanIsFresh()
   const roasted = new Date(BEAN_OF_WEEK.roastedOn).toLocaleDateString(locale === 'he' ? 'he-IL' : 'ru-RU', {
     day: 'numeric',
     month: 'long',
   })
+  // `bare` — карточка внутри блока, который уже задал колонку и отступы:
+  // собственная ширина и вертикальные поля тут только ломали бы ритм.
   return (
-    <Reveal className="mx-auto max-w-5xl px-6 py-20 sm:px-10">
+    <Reveal className={bare ? 'mt-8' : 'mx-auto max-w-5xl px-6 py-20 sm:px-10'}>
       <div className="border border-[rgba(236,230,220,.14)] bg-[#15120f]/70 p-7 backdrop-blur-sm sm:p-10">
         <p className="t-caption">{t.beanTitle}</p>
         <p className="t-h2 mt-3">{bean.origin}</p>
