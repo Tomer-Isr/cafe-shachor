@@ -32,7 +32,9 @@ def opt(name, default):
 
 SRC = argv[0] if argv and not argv[0].startswith("--") else "D:/tmp/cafe-hi144"
 AUX_SRC = opt("--aux", "")
-ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "public")
+# По умолчанию пишем прямо в public. `--dst` нужен, чтобы прогнать упаковку на
+# пробе, не затерев плёнку, которая сейчас на сайте.
+ROOT = opt("--dst", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "public"))
 
 # Ширины плёнок и качество. Тёмный плавный градиент — худший случай для webp:
 # на q82 он рассыпается ступеньками и блоками. Десктопной плёнке мало и q90:
