@@ -3,7 +3,7 @@ dist
 .DS_Store
 *.local
 
-# исходные карты Poly Haven (CC0) — качаются скриптом, в репозитории не нужны
-render/assets/tex/counter_diff.jpg
-render/assets/tex/counter_rough.jpg
-render/assets/tex/counter_nor.jpg
+# Исходные карты Poly Haven (CC0) — качаются `python render/fetch_tex.py`, в
+# репозитории не нужны: каждая по 5-17 МБ. Те, что были добавлены раньше
+# (counterseam, wall), git продолжает отслеживать — правило их не выбрасывает.
+render/assets/tex/*.jpg

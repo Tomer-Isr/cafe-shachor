@@ -1018,8 +1018,22 @@ if PROPS:
 # Сила рельефа намеренно мала: зеркальный тайл бесшовен по цвету, но карта
 # нормалей при отражении меняет знак, и на стыках проступают тонкие линии.
 # При слабом рельефе их не видно, а зерно камня остаётся.
-mat_s = pbr_material("Stone", "counterseam", scale=1.7, tint=(0.085, 0.080, 0.074),
-                     rough_boost=0.06, bump=0.22)
+# Камень выбирается аргументом: прежний бесшовный тайл собран из куска плитки
+# и живёт всего в 560 px — стойка занимает половину кадра, и на мониторе это
+# читается замыленностью. Настоящие карты в 4096 px дают вчетверо больше
+# зерна на тот же метр стойки.
+COUNTER_PRESETS = {
+    "counterseam": dict(scale=1.7, tint=(0.085, 0.080, 0.074), rough_boost=0.06, bump=0.22),
+    "granite": dict(scale=0.42, tint=(0.115, 0.108, 0.098), rough_boost=0.03, bump=0.55),
+    "concrete": dict(scale=0.50, tint=(0.135, 0.126, 0.114), rough_boost=0.02, bump=0.45),
+    # Ровное мелкое зерно без швов и пятен: на стойке читается камнем, а не
+    # рисунком пола, и держит фактуру при любом приближении камеры.
+    # Тон приглушён сильнее, чем просит карта: снятая при дневном свете, она
+    # тянет стойку в бежевый, а палитра кафе — тёмный эспрессо.
+    "granular": dict(scale=0.55, tint=(0.062, 0.058, 0.055), rough_boost=0.02, bump=0.40),
+}
+COUNTER_TEX = arg("--counter", "granular")
+mat_s = pbr_material("Stone", COUNTER_TEX, **COUNTER_PRESETS[COUNTER_TEX])
 if mat_s is None:
     mat_s, nt_s, bsdf_s = new_material("Stone")
     set_input(bsdf_s, "Base Color", (0.020, 0.018, 0.016, 1))
@@ -1255,8 +1269,18 @@ back.name = "BackWall"
 back.rotation_euler = (math.radians(90), 0, 0)
 # Стена — карты настоящего песчаника: блоки, швы, выкрошенные углы и разная
 # затёртость камня. Процедурная кладка давала ровный кирпич без истории.
-mat_b = pbr_material("Wall", "wall", scale=0.55, tint=(0.30, 0.26, 0.21),
-                     rough_boost=0.05, bump=1.15)
+# Стена тоже выбирается аргументом. Прежняя карта даёт очень мелкую светлую
+# крапку: на расстоянии деталь становится меньше пикселя кадра и читается не
+# камнем, а шумом — та самая «зернистость», которую видно на мониторе. Рисунок
+# нужен крупнее: блоки и швы, которые держатся на любом удалении.
+WALL_PRESETS = {
+    "wall": dict(scale=0.55, tint=(0.30, 0.26, 0.21), rough_boost=0.05, bump=1.15),
+    "sandstone": dict(scale=0.32, tint=(0.26, 0.22, 0.17), rough_boost=0.04, bump=1.0),
+    "plastered": dict(scale=0.30, tint=(0.34, 0.30, 0.25), rough_boost=0.04, bump=1.0),
+    "whitewash": dict(scale=0.30, tint=(0.22, 0.19, 0.16), rough_boost=0.04, bump=0.9),
+}
+WALL_TEX = arg("--wall", "plastered")
+mat_b = pbr_material("Wall", WALL_TEX, **WALL_PRESETS[WALL_TEX])
 if mat_b is None:
     mat_b, nt_b, bsdf_b = new_material("Wall")
     set_input(bsdf_b, "Base Color", (0.075, 0.062, 0.048, 1))
@@ -1319,7 +1343,13 @@ cam.data.sensor_width = 36
 # а сбоку освобождается место под текст
 cam.data.shift_x = _shift
 cam.data.dof.use_dof = True
-cam.data.dof.aperture_fstop = _fstop
+# Диафрагма. Часть «замыленности» дальнего плана — не текстура, а честная
+# глубина резкости. Маршрут задаёт своё число на каждый блок, поэтому вместо
+# единой цифры вся линейка умножается на общий коэффициент: соотношение между
+# блоками сохраняется, а фон становится определённее. Потолок нужен, чтобы
+# крупные планы не выродились в плоскую открытку без глубины.
+_fstop_scale = float(arg("--fstop-scale", "1.5"))
+cam.data.dof.aperture_fstop = float(arg("--fstop", "0")) or min(_fstop * _fstop_scale, 24.0)
 
 target = bpy.data.objects.new("Target", None)
 bpy.context.collection.objects.link(target)

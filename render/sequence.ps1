@@ -18,6 +18,9 @@ param(
     [int]$Samples = 112,
     [string]$Aux = "",          # папка для карт глубины; пусто — не считать
     [string]$Device = 'optix',
+    [string]$Counter = "",      # камень стойки: пусто — как задано в scene.py
+    [string]$Wall = "",         # материал стены
+    [string]$FstopScale = "",   # множитель диафрагмы по всему маршруту
     [string]$Blender = "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe",
     [string]$Project = "D:\Claude\projects\cafe-shachor"
 )
@@ -39,6 +42,9 @@ for ($i = 0; $i -lt $Frames; $i++) {
     # Карта глубины считается вторым проходом внутри того же запуска: сцена
     # собирается один раз, поэтому она стоит секунды, а не второй прогон.
     if ($Aux -ne "") { $args += @('--aux', $Aux, '--index', $i) }
+    if ($Counter -ne "") { $args += @('--counter', $Counter) }
+    if ($Wall -ne "") { $args += @('--wall', $Wall) }
+    if ($FstopScale -ne "") { $args += @('--fstop-scale', $FstopScale) }
 
     # Пониженный приоритет: на шести ядрах рендер съедает машину целиком и
     # работать за ней становится невозможно. Свободные ядра Blender всё равно
