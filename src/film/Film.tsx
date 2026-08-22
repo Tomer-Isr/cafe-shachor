@@ -106,11 +106,16 @@ export function Film({ count, progressRef, base, paused = false }: Props) {
     }
 
     let raf = 0
-    const tick = () => {
+    let prevTs = 0
+    const tick = (ts = 0) => {
       raf = requestAnimationFrame(tick)
+      const dt = prevTs ? Math.min(ts - prevTs, 100) : 16.667
+      prevTs = ts
       const target = (progressRef.current ?? 0) * (count - 1)
-      // сглаживание: скачок кадра на резком колесе читается рывком
-      current.current += (target - current.current) * (paused ? 1 : SMOOTH)
+      // Сглаживание по времени, а не по кадрам: иначе при просадке частоты
+      // запаздывание растёт и рывок становится заметнее (то же, что в FilmGL).
+      const k = paused ? 1 : 1 - Math.pow(1 - SMOOTH, dt / 16.667)
+      current.current += (target - current.current) * k
       const img = nearest(Math.round(current.current))
       if (img) drawCover(img)
     }

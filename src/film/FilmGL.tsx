@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 /**
  * Скролл-плёнка на WebGL: кадры из Cycles крутятся прокруткой, но сверх этого
@@ -41,6 +41,12 @@ interface Props {
 }
 
 const BATCH = 8
+// Сколько кадров по обе стороны от текущего держать распакованными.
+// 33 кадра x 13 МБ = 433 МБ вместо 1 871 МБ на всю плёнку.
+const WINDOW = 16
+// Сколько кадров распаковывать за один проход обслуживания окна.
+// Распаковка стоит ~15 мс; пачкой она даёт всплески по 80-120 мс.
+const DECODES_PER_PASS = 3
 const SMOOTH = 0.16
 const DPR_CAP = 1.5
 const MAX_RIPPLES = 4
@@ -333,6 +339,12 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
   const canvas = useRef<HTMLCanvasElement>(null)
   const frames = useRef<(ImageBitmap | null)[]>([])
   const auxes = useRef<(ImageBitmap | null)[]>([])
+  // Скачанные, но ещё не распакованные кадры. Blob лежит сжатым (вся плёнка
+  // ~12 МБ), ImageBitmap — распакованным (13 МБ на кадр). Держать распакованными
+  // все 144 значило 1,9 ГБ на вкладку; теперь распакованы только соседние.
+  const blobs = useRef<(Blob | null)[]>([])
+  const auxBlobs = useRef<(Blob | null)[]>([])
+  const decoding = useRef<Set<number>>(new Set())
   const current = useRef(0)
   const [ready, setReady] = useState(0)
   const [fallback, setFallback] = useState(false)
@@ -348,22 +360,114 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
   const root = base ?? `${import.meta.env.BASE_URL}film/`
   const auxRoot = auxBase ?? `${import.meta.env.BASE_URL}film-aux/`
 
+  // ── распаковка по требованию ────────────────────────────────────────────
+  // Blob'ы качаются все и сразу, а распаковываются только вокруг текущего
+  // места. Раньше распакованными держались все 144 кадра — 1,9 ГБ на вкладку,
+  // из-за чего страница «долго открывается» и подтормаживает на слабой машине.
+
+  const decodeFrame = useCallback(async (i: number) => {
+    if (frames.current[i] || decoding.current.has(i)) return
+    const b = blobs.current[i]
+    if (!b) return
+    decoding.current.add(i)
+    try {
+      frames.current[i] = await createImageBitmap(b, { imageOrientation: 'flipY' })
+    } catch {
+      /* битый кадр — пропускаем, nearest возьмёт соседний */
+    } finally {
+      decoding.current.delete(i)
+    }
+  }, [])
+
+  const decodeAux = useCallback(async (i: number) => {
+    const key = i + 100000 // отдельное пространство ключей от кадров
+    if (auxes.current[i] || decoding.current.has(key)) return
+    const b = auxBlobs.current[i]
+    if (!b) return
+    decoding.current.add(key)
+    try {
+      auxes.current[i] = await createImageBitmap(b, { imageOrientation: 'flipY' })
+    } catch {
+      /* без карты глубины сцена рисуется, просто без объёма */
+    } finally {
+      decoding.current.delete(key)
+    }
+  }, [])
+
+  /** Держит распакованными кадры вокруг center, остальные отпускает. */
+  const maintainWindow = useCallback(
+    (center: number, total: number) => {
+      const lo = center - WINDOW
+      const hi = center + WINDOW
+
+      // Сначала освобождаем вышедшее из окна, потом добираем недостающее —
+      // и добираем понемногу. Распаковка кадра стоит ~15 мс; если запустить
+      // её сразу на всё окно (а при быстрой прокрутке окно обновляется целиком),
+      // очередь декодера забивается и появляются всплески по 80-120 мс.
+      // Ближние кадры важнее дальних, поэтому идём от центра наружу.
+      let budget = DECODES_PER_PASS
+      const want: number[] = []
+      for (let d = 0; d <= WINDOW; d++) {
+        for (const i of d === 0 ? [center] : [center - d, center + d]) {
+          if (i >= 0 && i < total) want.push(i)
+        }
+      }
+
+      for (let i = 0; i < total; i++) {
+        if (i >= lo && i <= hi) {
+          // распаковкой займёмся ниже, по бюджету
+        } else {
+          const f = frames.current[i]
+          if (f) {
+            f.close()
+            frames.current[i] = null
+          }
+          const a = auxes.current[i]
+          if (a) {
+            a.close()
+            auxes.current[i] = null
+          }
+        }
+      }
+
+      for (const i of want) {
+        if (budget <= 0) break
+        if (!frames.current[i] && !decoding.current.has(i)) {
+          void decodeFrame(i)
+          budget--
+        }
+      }
+      // Карты глубины лёгкие (512 px), но и их незачем распаковывать пачкой.
+      let auxBudget = DECODES_PER_PASS
+      for (const i of want) {
+        if (auxBudget <= 0) break
+        if (!auxes.current[i] && !decoding.current.has(i + 100000)) {
+          void decodeAux(i)
+          auxBudget--
+        }
+      }
+    },
+    [decodeFrame, decodeAux],
+  )
+
   // ── загрузка кадров и карт глубины пачками ──────────────────────────────
   useEffect(() => {
-    frames.current = new Array(count).fill(null)
-    auxes.current = new Array(count).fill(null)
+    // Фиксируем ссылки на массивы: cleanup должен отпускать именно те кадры,
+    // которые завёл этот прогон эффекта, а не то, что окажется в ref потом.
+    const frameList: (ImageBitmap | null)[] = new Array(count).fill(null)
+    const auxList: (ImageBitmap | null)[] = new Array(count).fill(null)
+    frames.current = frameList
+    auxes.current = auxList
+    const decodingSet = decoding.current
     let cancelled = false
     let loaded = 0
 
-    // Кадры едут как ImageBitmap, а не как <img>: картинку декодирует рабочий
-    // поток, а в видеопамять она уходит готовым буфером. На прокрутке, где
-    // кадр заливается по шестьдесят раз в секунду, разница заметная.
-    const load = (src: string, keep: (img: ImageBitmap) => void) =>
+    // Скачиваем сжатый blob и кладём в кэш. Распаковкой занимается окно ниже:
+    // держать распакованными все кадры сразу — 1,9 ГБ, вкладка начинает
+    // свопиться и страница «долго открывается».
+    const fetchBlob = (src: string, keep: (b: Blob) => void) =>
       fetch(src)
         .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('нет кадра'))))
-        // Переворот задаём здесь: флаг UNPACK_FLIP_Y_WEBGL на ImageBitmap не
-        // действует, и без этого вся сцена встаёт вверх ногами.
-        .then((blob) => createImageBitmap(blob, { imageOrientation: 'flipY' }))
         .then(keep)
         .catch(() => {})
 
@@ -385,10 +489,13 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
       if (cancelled || from >= order.length) return
       await Promise.all(
         order.slice(from, from + BATCH).map((i) =>
-          load(framePath(root, i), (img) => {
-            frames.current[i] = img
+          fetchBlob(framePath(root, i), (b) => {
+            blobs.current[i] = b
             loaded += 1
             if (!cancelled) setReady(loaded)
+            // Первые кадры вокруг стартовой позиции распаковываем сразу,
+            // не дожидаясь цикла отрисовки — иначе первый экран пустой.
+            if (Math.abs(i - startAt) <= 2) void decodeFrame(i)
           }),
         ),
       )
@@ -401,8 +508,8 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
       if (cancelled || from >= order.length) return
       await Promise.all(
         order.slice(from, from + BATCH).map((i) =>
-          load(auxPath(auxRoot, i), (img) => {
-            auxes.current[i] = img
+          fetchBlob(auxPath(auxRoot, i), (b) => {
+            auxBlobs.current[i] = b
           }),
         ),
       )
@@ -412,8 +519,17 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
 
     return () => {
       cancelled = true
+      // Отпускаем распакованные кадры: без close() они висят до сборки мусора,
+      // а это сотни мегабайт.
+      for (const list of [frameList, auxList]) {
+        list.forEach((b) => b?.close?.())
+        list.fill(null)
+      }
+      blobs.current = []
+      auxBlobs.current = []
+      decodingSet.clear()
     }
-  }, [count, root, auxRoot, progressRef])
+  }, [count, root, auxRoot, progressRef, decodeFrame])
 
   // ── ввод ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -478,7 +594,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
   useEffect(() => {
     const el = canvas.current
     if (!el) return
-    const gl = el.getContext('webgl2', { alpha: false, antialias: false, powerPreference: 'low-power' })
+    const gl = el.getContext('webgl2', { alpha: false, antialias: false, powerPreference: 'high-performance' })
     if (!gl) {
       setFallback(true)
       onFailRef.current?.()
@@ -533,10 +649,12 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     const texAuxSmooth = makeTex(1, true, true)
     const texAuxSharp = makeTex(2, false)
     const texFrameNext = makeTex(3, true)
-    gl.uniform1i(gl.getUniformLocation(prog, 'frame'), 0)
+    const uFrameTex = gl.getUniformLocation(prog, 'frame')
+    const uFrameNextTex = gl.getUniformLocation(prog, 'frameNext')
+    gl.uniform1i(uFrameTex, 0)
     gl.uniform1i(gl.getUniformLocation(prog, 'auxSmooth'), 1)
     gl.uniform1i(gl.getUniformLocation(prog, 'auxSharp'), 2)
-    gl.uniform1i(gl.getUniformLocation(prog, 'frameNext'), 3)
+    gl.uniform1i(uFrameNextTex, 3)
 
     const uCanvas = gl.getUniformLocation(prog, 'canvasSize')
     const uFrame = gl.getUniformLocation(prog, 'frameSize')
@@ -657,10 +775,13 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     const texSize = new WeakMap<WebGLTexture, string>()
     const upload = (tex: WebGLTexture, img: ImageBitmap) => {
       const key = `${img.width}x${img.height}`
+      // RGBA, не RGB: у драйвера трёхбайтовый пиксель не выровнен по 4, и он
+      // переупаковывает строку за строкой. Замер на кадре 2400x1353:
+      // 11,9 мс -> 7,4 мс на заливку, это треть бюджета кадра при 60 Гц.
       if (texSize.get(tex) === key) {
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGB, gl.UNSIGNED_BYTE, img)
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, img)
       } else {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img)
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
         texSize.set(tex, key)
       }
     }
@@ -669,12 +790,26 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     let snap = true
     let uploadedFrame: ImageBitmap | null = null
     let uploadedNext: ImageBitmap | null = null
+    // Какая из двух текстур сейчас играет «текущий кадр», какая «следующий».
+    // Роли меняются местами по ходу прокрутки (см. пинг-понг в tick).
+    let slotCur = texFrame
+    let slotNext = texFrameNext
+    let unitCur = 0
+    let unitNext = 3
     let uploadedAux: ImageBitmap | null = null
     const rippleData = new Float32Array(MAX_RIPPLES * 4)
     const startedAt = performance.now()
 
-    const tick = () => {
+    // Отметка предыдущего кадра — нужна, чтобы демпфирование считалось по
+    // времени, а не по числу кадров (см. ниже).
+    let prevTs = 0
+    let lastWindowAt = -1e9
+
+    const tick = (ts = 0) => {
       raf = requestAnimationFrame(tick)
+      // Первый кадр: dt неизвестен, берём один кадр при 60 Гц.
+      const dt = prevTs ? Math.min(ts - prevTs, 100) : 16.667
+      prevTs = ts
 
       const target = (progressRef.current ?? 0) * (count - 1)
       // Первый кадр после загрузки берётся как есть. Иначе при обновлении
@@ -685,32 +820,60 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
         current.current = target
         snap = false
       } else {
-        current.current += (target - current.current) * (paused ? 1 : SMOOTH)
+        // Демпфирование по времени, а не по кадрам. Раньше коэффициент был
+        // фиксированным на кадр, и при падении частоты вдвое запаздывание
+        // удваивалось: 220 мс при 60 Гц, 440 мс при 30. Это замыкало петлю —
+        // просадка частоты делала плёнку заметно ступенчатее, что читалось
+        // как дёрганость. Теперь постоянная времени одна и та же в миллисекундах.
+        const k = paused ? 1 : 1 - Math.pow(1 - SMOOTH, dt / 16.667)
+        current.current += (target - current.current) * k
       }
 
       const index = Math.floor(current.current)
       const frac = current.current - index
+
+      // Раз в 120 мс подтягиваем окно распакованных кадров к текущему месту.
+      // Чаще незачем: за 120 мс прокрутка сдвигает плёнку максимум на пару
+      // кадров, а окно ±16 покрывает это с большим запасом.
+      if (ts - lastWindowAt > 120) {
+        lastWindowAt = ts
+        maintainWindow(index, count)
+      }
+
       const img = nearest(frames.current, index)
       if (!img) return
-
-      if (img !== uploadedFrame) {
-        gl.activeTexture(gl.TEXTURE0)
-        gl.bindTexture(gl.TEXTURE_2D, texFrame)
-        upload(texFrame, img)
-        uploadedFrame = img
-        gl.uniform2f(uFrame, img.width, img.height)
-      }
 
       // Следующий кадр и доля перехода к нему. Соседний кадр берём только если
       // он действительно загружен: подставлять вместо него дальний (как делает
       // nearest) значило бы смешивать несмежные позиции камеры — получилось бы
       // призрачное двоение вместо плавности.
       const nextImg = frames.current[Math.min(index + 1, count - 1)] ?? null
+
+      // Пинг-понг вместо двух независимых заливок. При обычной прокрутке кадр
+      // сдвигается на единицу, и то, что секунду назад было «следующим», уже
+      // лежит в видеопамяти — незачем заливать его второй раз как «текущий».
+      // Меняем текстуры ролями: одна заливка на шаг вместо двух.
+      if (img === uploadedNext && nextImg !== uploadedFrame) {
+        const t = slotCur; slotCur = slotNext; slotNext = t
+        const u = unitCur; unitCur = unitNext; unitNext = u
+        const up = uploadedFrame; uploadedFrame = uploadedNext; uploadedNext = up
+        gl.uniform1i(uFrameTex, unitCur)
+        gl.uniform1i(uFrameNextTex, unitNext)
+      }
+
+      if (img !== uploadedFrame) {
+        gl.activeTexture(gl.TEXTURE0 + unitCur)
+        gl.bindTexture(gl.TEXTURE_2D, slotCur)
+        upload(slotCur, img)
+        uploadedFrame = img
+        gl.uniform2f(uFrame, img.width, img.height)
+      }
+
       const mix = nextImg && nextImg !== img ? frac : 0
       if (nextImg && nextImg !== uploadedNext) {
-        gl.activeTexture(gl.TEXTURE3)
-        gl.bindTexture(gl.TEXTURE_2D, texFrameNext)
-        upload(texFrameNext, nextImg)
+        gl.activeTexture(gl.TEXTURE0 + unitNext)
+        gl.bindTexture(gl.TEXTURE_2D, slotNext)
+        upload(slotNext, nextImg)
         uploadedNext = nextImg
       }
       gl.uniform1f(uFrameMix, mix)
@@ -804,7 +967,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
       gl.deleteTexture(texAuxSharp)
       gl.deleteBuffer(buf)
     }
-  }, [count, progressRef, paused, still])
+  }, [count, progressRef, paused, still, maintainWindow])
 
   return (
     <>
