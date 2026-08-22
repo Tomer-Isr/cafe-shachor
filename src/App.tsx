@@ -167,7 +167,11 @@ export default function App() {
 
       {/* Прогресс плёнки доступен тексту: из него выводится скорость выхода строк */}
       <FilmProgress.Provider value={progressRef}>
-      <div className="relative z-[2] on-scene">
+      {/* dir объявлен разметкой, а не эффектом на <html>: разбиение строк
+          читает направление письма в layout-эффекте, то есть раньше, чем
+          отработает любой useEffect. Иначе первая пересборка после смены
+          языка меряет текст в прежнюю сторону. */}
+      <div dir={t.dir} className="relative z-[2] on-scene">
         {/* 1. общий план — имя и манифест */}
         <Block screens={BLOCKS.hero} className={column}>
           <div className="w-full max-w-[34ch]" style={{ textAlign: t.dir === 'rtl' ? 'right' : 'left', marginInlineStart: 'auto' }}>
