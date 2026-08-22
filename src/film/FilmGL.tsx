@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import PACING from './pacing.json'
 
 /**
  * Скролл-плёнка на WebGL: кадры из Cycles крутятся прокруткой, но сверх этого
@@ -47,7 +48,34 @@ const WINDOW = 16
 // Сколько кадров распаковывать за один проход обслуживания окна.
 // Распаковка стоит ~15 мс; пачкой она даёт всплески по 80-120 мс.
 const DECODES_PER_PASS = 3
-const SMOOTH = 0.16
+
+/**
+ * Прокрутка -> позиция в плёнке, с поправкой на видимую скорость камеры.
+ *
+ * Маршрут камеры в сцене перепараметризован по длине пути: в метрах она едет
+ * равномерно. На экране — нет: у близкого предмета то же перемещение даёт
+ * куда больший сдвиг картинки. Замер по готовой плёнке: 11 пикселей на кадр
+ * в начале против 44 в середине. При ровной прокрутке сцена то ползла, то
+ * дёргалась — и это не лечилось сглаживанием, потому что источник в самой
+ * плёнке, а не во вводе.
+ *
+ * Таблица (render/pack_flow.py) растягивает быстрые участки по прокрутке и
+ * сжимает медленные. Разброс скорости на равный шаг прокрутки: было 43 %,
+ * стало 3 %.
+ */
+function paced(p: number): number {
+  const t = Math.min(Math.max(p, 0), 1) * (PACING.length - 1)
+  const i = Math.floor(t)
+  const f = t - i
+  const a = PACING[i]
+  const b = PACING[Math.min(i + 1, PACING.length - 1)]
+  return a + (b - a) * f
+}
+// 0.3, а не 0.16: прокрутку теперь сглаживает Lenis, и второе
+// демпфирование поверх первого давало вязкое запаздывание — плёнка
+// заметно отставала от страницы. Здесь остаётся лёгкое сглаживание
+// на случай, когда Lenis выключен (reduced-motion, тач).
+const SMOOTH = 0.3
 const DPR_CAP = 1.5
 const MAX_RIPPLES = 4
 /** номера предметов из render/scene.py: 1 — чашка, 2 — кофе, 3 — зерно… */
@@ -550,7 +578,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     // и последовательная загрузка с нуля означала, что нужный кадр приедет
     // последним: до этого сцена показывала начало и потом рывком догоняла.
     // Сначала вперёд по ходу чтения, следом назад — возврат вверх тоже бывает.
-    const startAt = Math.round((progressRef.current ?? 0) * (count - 1))
+    const startAt = Math.round(paced(progressRef.current ?? 0) * (count - 1))
     const order: number[] = []
     for (let d = 0; d < count; d++) {
       const ahead = startAt + d
@@ -907,7 +935,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
       const dt = prevTs ? Math.min(ts - prevTs, 100) : 16.667
       prevTs = ts
 
-      const target = (progressRef.current ?? 0) * (count - 1)
+      const target = paced(progressRef.current ?? 0) * (count - 1)
       // Первый кадр после загрузки берётся как есть. Иначе при обновлении
       // страницы браузер восстанавливает прокрутку, плёнка стартует с нуля и
       // на глазах догоняет нужное место — это и читалось как «сам перематывает

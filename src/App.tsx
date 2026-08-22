@@ -6,6 +6,7 @@ import { Block } from './ui/Block'
 import { FilmProgress } from './film/motion'
 import { Lines } from './ui/Lines'
 import { BeanBlock, Booking, Footer, Menu, Space, Visit } from './ui/Sections'
+import { useSmoothScroll } from './film/useSmoothScroll'
 
 /**
  * Сцена — фон всей страницы, а не пролог с контентом под ним.
@@ -108,6 +109,10 @@ export default function App() {
   // выполняются позже, чем монтируется плёнка, и она успела бы решить, что
   // страница стоит в самом начале — а браузер после обновления возвращает
   // прокрутку на прежнее место.
+  // Плавная прокрутка: колесо на Windows идёт скачками, и без этого текст
+  // двигался ступеньками, пока плёнка шла гладко.
+  useSmoothScroll()
+
   const progressRef = useRef(initialProgress())
   const menuRef = useRef<HTMLElement | null>(null)
   const t = COPY[locale]

@@ -22,7 +22,11 @@ interface Props {
 }
 
 const BATCH = 8
-const SMOOTH = 0.16
+// 0.3, а не 0.16: прокрутку теперь сглаживает Lenis, и второе
+// демпфирование поверх первого давало вязкое запаздывание — плёнка
+// заметно отставала от страницы. Здесь остаётся лёгкое сглаживание
+// на случай, когда Lenis выключен (reduced-motion, тач).
+const SMOOTH = 0.3
 const DPR_CAP = 1.5
 
 const framePath = (base: string, i: number) => `${base}frame-${String(i).padStart(3, '0')}.webp`
