@@ -12,19 +12,24 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <title>שחור · קפה בלי מיותר · יפו</title>
     <meta
       name="description"
       content="שחור — מיקרו־קלייה ובית קפה בסמטה ביפו. קולים ביום שלישי, תפריט קצר בכוונה. קונספט הדגמה."
     />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@300;500;800&family=Heebo:wght@200;400;500&family=Cormorant+Garamond:wght@300;500;600&family=Manrope:wght@200;400;500&display=swap"
-      rel="stylesheet"
-    />
+    <!--
+      Шрифты лежат на своём домене (scripts/fetch_fonts.py) — сторонний CDN убран
+      вместе с двумя коннектами на старте. Предзагружаем только то, что реально
+      стоит на первом экране в локали по умолчанию: вордмарк, дисплей и корпус
+      на иврите плюс моно для меток. Остальные подмножества браузер возьмёт сам
+      по unicode-range, когда переключат язык.
+    -->
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/suez-one-hebrew-400-normal.woff2" />
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/frank-ruhl-hebrew-300-900-normal.woff2" />
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/miriam-hebrew-400-normal.woff2" />
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/plex-mono-latin-400-normal.woff2" />
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",

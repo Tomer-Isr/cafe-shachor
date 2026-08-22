@@ -3,6 +3,7 @@ import { COPY, type Locale } from './content/copy'
 import { Film } from './film/Film'
 import { FilmGL } from './film/FilmGL'
 import { Block } from './ui/Block'
+import { FilmProgress } from './film/motion'
 import { Lines } from './ui/Lines'
 import { BeanBlock, Booking, Footer, Menu, Space, Visit } from './ui/Sections'
 
@@ -30,14 +31,43 @@ const FRAME_COUNT = 144
 const BLOCKS = { hero: 2, roast: 2.4, menu: 3, space: 1.6, invite: 1.4 }
 const FILM_SCREENS = Object.values(BLOCKS).reduce((a, b) => a + b, 0)
 
+/**
+ * Где стоит середина каждого блока на плёнке, 0..1.
+ *
+ * Отсюда текст узнаёт, что делает камера на его участке: где она почти стоит,
+ * строки ложатся медленно и с большим зазором, где летит — быстрее и плотнее.
+ * Величина детерминированная (положение блока), а не «где сейчас пользователь»,
+ * иначе окно раскладки менялось бы на каждом пересчёте.
+ */
+const FILM_AT = (() => {
+  const travel = FILM_SCREENS - 1
+  let start = 0
+  const out = {} as Record<keyof typeof BLOCKS, number>
+  for (const [key, screens] of Object.entries(BLOCKS) as [keyof typeof BLOCKS, number][]) {
+    out[key] = Math.min(1, (start + screens / 2) / travel)
+    start += screens
+  }
+  return out
+})()
+
 const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-/** Есть ли WebGL2: без него плёнка крутится обычной канвой, без реакции на курсор. */
+/**
+ * Есть ли WebGL2: без него плёнка крутится обычной канвой, без реакции на курсор.
+ *
+ * Проверочный контекст обязательно освобождается. Пока он висел, настоящий
+ * контекст плёнки не поднимался вовсе — `getContext` отдавал null, компонент
+ * молча уходил на запасную канву, и вся сцена ехала целыми кадрами, без
+ * смешивания. Со стороны это выглядело просто как «всё дёргано».
+ */
 const hasWebGL2 = () => {
   if (typeof document === 'undefined') return false
   try {
-    return !!document.createElement('canvas').getContext('webgl2')
+    const probe = document.createElement('canvas').getContext('webgl2')
+    if (!probe) return false
+    probe.getExtension('WEBGL_lose_context')?.loseContext()
+    return true
   } catch {
     return false
   }
@@ -60,13 +90,25 @@ const filmBase = () => {
 
 const clamp = (v: number, a = 0, b = 1) => Math.min(b, Math.max(a, v))
 
+/** Позиция плёнки по текущей прокрутке — та же формула, что в обработчике. */
+const initialProgress = () => {
+  if (typeof window === 'undefined') return 0
+  const frozen = new URLSearchParams(window.location.search).get('shot')
+  if (frozen !== null) return clamp(Number(frozen) || 0)
+  return clamp(window.scrollY / (window.innerHeight * (FILM_SCREENS - 1)))
+}
+
 export default function App() {
   const [locale, setLocale] = useState<Locale>('he')
   const [paused] = useState(prefersReducedMotion)
   const [gl, setGl] = useState(hasWebGL2)
   const [base] = useState(filmBase)
 
-  const progressRef = useRef(0)
+  // Начальный прогресс считается синхронно, до первого кадра: эффекты родителя
+  // выполняются позже, чем монтируется плёнка, и она успела бы решить, что
+  // страница стоит в самом начале — а браузер после обновления возвращает
+  // прокрутку на прежнее место.
+  const progressRef = useRef(initialProgress())
   const menuRef = useRef<HTMLElement | null>(null)
   const t = COPY[locale]
 
@@ -118,15 +160,17 @@ export default function App() {
         <Film count={FRAME_COUNT} progressRef={progressRef} base={base} paused={paused} />
       )}
 
+      {/* Прогресс плёнки доступен тексту: из него выводится скорость выхода строк */}
+      <FilmProgress.Provider value={progressRef}>
       <div className="relative z-[2] on-scene">
         {/* 1. общий план — имя и манифест */}
         <Block screens={BLOCKS.hero} className={column}>
           <div className="w-full max-w-[34ch]" style={{ textAlign: t.dir === 'rtl' ? 'right' : 'left', marginInlineStart: 'auto' }}>
-            <Lines locale={locale} className="t-caption mb-5">{t.heroFact}</Lines>
-            <Lines locale={locale} delay={0.1}>
+            <Lines locale={locale} level="caption" film={FILM_AT.hero} mode="intro" className="t-caption mb-5">{t.heroFact}</Lines>
+            <Lines locale={locale} level="display" film={FILM_AT.hero} mode="intro" delay={0.1}>
               <h1 className="t-display">{t.brand}</h1>
             </Lines>
-            <Lines locale={locale} delay={0.22} className="mt-4 text-xl text-[#c9c0b3] sm:text-2xl">
+            <Lines locale={locale} level="lead" film={FILM_AT.hero} mode="intro" delay={0.22} className="t-lead mt-4 text-[var(--fg-dim)]">
               {t.heroLine}
             </Lines>
             <div className="mt-9 flex flex-wrap items-center gap-3">
@@ -150,11 +194,11 @@ export default function App() {
         {/* 2. зерно — обжарка */}
         <Block screens={BLOCKS.roast} className={column}>
           <div className="w-full max-w-[38ch]" style={{ textAlign: t.dir === 'rtl' ? 'right' : 'left', marginInlineStart: 'auto' }}>
-            <Lines locale={locale} className="t-caption mb-5">02</Lines>
-            <Lines locale={locale} delay={0.08}>
+            <Lines locale={locale} level="caption" film={FILM_AT.roast} className="t-caption mb-5">02</Lines>
+            <Lines locale={locale} level="h2" film={FILM_AT.roast} delay={0.08}>
               <h2 className="t-h2">{t.actTwoTitle}</h2>
             </Lines>
-            <Lines locale={locale} delay={0.2} className="t-body mt-4 text-[#c9c0b3]">
+            <Lines locale={locale} level="body" film={FILM_AT.roast} delay={0.2} className="t-body mt-4">
               {t.actTwoText}
             </Lines>
             <BeanBlock t={t} locale={locale} bare />
@@ -164,11 +208,11 @@ export default function App() {
         {/* 3. налив — меню */}
         <Block screens={BLOCKS.menu} hold={false} className={`${column} block pt-[18svh]`}>
           <div className="ms-auto w-full max-w-[52ch]">
-            <Lines locale={locale} className="t-caption mb-5">03</Lines>
-            <Lines locale={locale} delay={0.08}>
+            <Lines locale={locale} level="caption" film={FILM_AT.menu} className="t-caption mb-5">03</Lines>
+            <Lines locale={locale} level="h2" film={FILM_AT.menu} delay={0.08}>
               <h2 className="t-h2">{t.actThreeTitle}</h2>
             </Lines>
-            <Lines locale={locale} delay={0.18} className="t-body mt-3 text-[#c9c0b3]">
+            <Lines locale={locale} level="body" film={FILM_AT.menu} delay={0.18} className="t-body mt-3">
               {t.actThreeText}
             </Lines>
             <Menu t={t} locale={locale} anchorRef={menuRef} />
@@ -185,10 +229,10 @@ export default function App() {
         {/* 5. финал — приглашение */}
         <Block screens={BLOCKS.invite} className={column}>
           <div className="w-full max-w-[32ch]" style={{ textAlign: t.dir === 'rtl' ? 'right' : 'left', marginInlineStart: 'auto' }}>
-            <Lines locale={locale}>
+            <Lines locale={locale} level="display" film={FILM_AT.invite}>
               <h2 className="t-display">{t.brand}</h2>
             </Lines>
-            <Lines locale={locale} delay={0.15} className="t-body mt-4 text-[#c9c0b3]">
+            <Lines locale={locale} level="body" film={FILM_AT.invite} delay={0.15} className="t-body mt-4">
               {t.spaceText}
             </Lines>
             <a
@@ -210,6 +254,7 @@ export default function App() {
           </div>
         </div>
       </div>
+      </FilmProgress.Provider>
 
       <div className="fixed bottom-4 start-4 z-[3] flex gap-1 text-xs">
         {(['he', 'ru', 'en'] as Locale[]).map((l) => (

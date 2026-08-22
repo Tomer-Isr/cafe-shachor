@@ -21,6 +21,14 @@ param(
     [string]$Counter = "",      # камень стойки: пусто — как задано в scene.py
     [string]$Wall = "",         # материал стены
     [string]$FstopScale = "",   # множитель диафрагмы по всему маршруту
+    # Свет: пусто — как задано в scene.py. Задаётся снаружи, чтобы не править
+    # сам scene.py ради светового варианта: во время секвенции он читается
+    # заново на каждом кадре, и правка попала бы в середину плёнки.
+    [string]$Exposure = "",
+    [string]$Key = "",
+    [string]$Rim = "",
+    [string]$Fill = "",
+    [string]$Lamp = "",
     [string]$Blender = "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe",
     [string]$Project = "D:\Claude\projects\cafe-shachor"
 )
@@ -45,6 +53,11 @@ for ($i = 0; $i -lt $Frames; $i++) {
     if ($Counter -ne "") { $args += @('--counter', $Counter) }
     if ($Wall -ne "") { $args += @('--wall', $Wall) }
     if ($FstopScale -ne "") { $args += @('--fstop-scale', $FstopScale) }
+    if ($Exposure -ne "") { $args += @('--exposure', $Exposure) }
+    if ($Key -ne "") { $args += @('--key', $Key) }
+    if ($Rim -ne "") { $args += @('--rim', $Rim) }
+    if ($Fill -ne "") { $args += @('--fill', $Fill) }
+    if ($Lamp -ne "") { $args += @('--lamp', $Lamp) }
 
     # Пониженный приоритет: на шести ядрах рендер съедает машину целиком и
     # работать за ней становится невозможно. Свободные ядра Blender всё равно

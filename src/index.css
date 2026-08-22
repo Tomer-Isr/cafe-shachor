@@ -1,19 +1,77 @@
 @import 'tailwindcss';
+@import './fonts.css';
+
+/*
+ * Дизайн-система: docs/DESIGN-SYSTEM.md. Здесь только реализация — обоснования
+ * там, дублировать их в комментариях нет смысла. В коде остаётся то, что легко
+ * нарушить, не заглянув в документ.
+ */
 
 @theme {
   --color-ink: #0a0908;
-  --color-surface: #15120f;
-  --color-stone: #b9ab97;
+  --color-soot: #15120f;
+  --color-pitch: #060504;
   --color-fg: #ece6dc;
+  --color-fg-dim: #c9c0b3;
   --color-muted: #93897c;
   --color-accent: #c8703a;
 }
 
 :root {
+  /* база */
+  --ink: #0a0908;
+  --soot: #15120f;
+  --pitch: #060504;
+
+  /* текст */
+  --fg: #ece6dc;
+  --fg-dim: #c9c0b3;
+  --muted: #93897c;
+
+  /* линии: функциональная и декоративная разведены не по вкусу, а по порогу —
+     всё ниже .37 не даёт 3:1 над фоном и информацию нести не может */
+  --line-ui: rgba(236, 230, 220, 0.48);
+  --line-hair: rgba(236, 230, 220, 0.16);
+
+  /* акцент: маркер действия или проверяемой величины, не «цвет бренда».
+     Пять появлений на страницу, список — в DESIGN-SYSTEM §1.3 */
   --accent: #c8703a;
-  --font-display: 'Frank Ruhl Libre', 'Cormorant Garamond', serif;
-  --font-body: 'Heebo', 'Manrope', system-ui, sans-serif;
+  --accent-hi: #d67f47;
+  --accent-lo: #b8642f;
+
+  /* движение: три длительности, четвёртой нет — промежуточные значения
+     получаются интерполяцией по скорости камеры (см. useCameraMotion) */
+  --t-1: 180ms;
+  --t-2: 450ms;
+  --t-3: 900ms;
+  --e-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --e-inout: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* гарнитуры по регистрам */
+  --font-wordmark: 'Suez One', serif;
+  --font-display: 'Frank Ruhl Libre', serif;
+  --font-body: 'Miriam Libre', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* множители кегля и интерлиньяжа по языку: у иврита нет выносных элементов,
+     строка плотнее при том же кегле */
+  --lang-scale: 1;
+  --lang-leading: 0;
+
   color-scheme: dark;
+}
+
+/* Кириллице нужны свои гарнитуры: у ивритских их нет вовсе.
+   Cormorant оптически мельче остальных серифов, отсюда множитель заголовка. */
+:root:lang(ru) {
+  --font-display: 'Cormorant Garamond', serif;
+  --font-body: 'Commissioner', system-ui, sans-serif;
+  --display-scale: 1.08;
+}
+
+:root:lang(he) {
+  --lang-scale: 0.94;
+  --lang-leading: 0.06;
 }
 
 html,
@@ -24,78 +82,284 @@ body,
 
 body {
   margin: 0;
-  background: #0a0908;
-  color: #ece6dc;
+  background: var(--ink);
+  color: var(--fg);
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
 }
 
-/*
- * Текст лежит прямо на сцене, без подложек: полупрозрачная плашка убивает
- * кадр — сцена превращается в картинку за стеклом. Читаемость держат сами
- * буквы: мягкая тень отделяет их от фона, не рисуя вокруг никакой формы.
- * Два слоя намеренно: ближний даёт контур на светлом пятне кадра, дальний —
- * общее отделение от текстуры камня.
- */
-.on-scene {
-  text-shadow:
-    0 1px 2px rgba(8, 6, 5, 0.8),
-    0 3px 10px rgba(8, 6, 5, 0.75),
-    0 10px 34px rgba(8, 6, 5, 0.7);
-}
+/* ── Пять уровней ─────────────────────────────────────────────────────────
+   Шкала D:E держит контраст 13.8:1 на десктопе и 8:1 на 360 px. Нижняя
+   граница дисплея 5.5rem намеренная: на узком экране вордмарк обрезается
+   краем — это приём, а не аварийный перенос. */
 
-/*
- * Кадр не всегда тёмный там, где идёт текст: под меню проходит россыпь зерна,
- * под «местом» — поверхность кофе крупным планом. Строки на таких участках
- * должны быть светлее обычного, иначе тонут. Это дешевле любой плашки: меняем
- * букву, а не подкладываем под неё стекло.
- */
-.on-scene .t-body,
-.on-scene p {
-  color: #ded6c9;
-}
-.on-scene .t-caption {
-  color: #b3a897;
-}
-
-/* Типографика — четыре уровня, не «заголовок + текст» */
 .t-display {
-  font-family: var(--font-display);
-  font-size: clamp(3.4rem, 13vw, 9rem);
-  line-height: 0.92;
-  font-weight: 500;
+  font-family: var(--font-wordmark);
+  font-size: calc(clamp(5.5rem, 15vw, 9.5rem) * var(--lang-scale));
+  line-height: calc(0.86 + var(--lang-leading));
+  font-weight: 400;
   letter-spacing: -0.02em;
 }
+
 .t-h2 {
   font-family: var(--font-display);
-  font-size: clamp(1.7rem, 3.4vw, 2.7rem);
-  line-height: 1.12;
-  font-weight: 500;
-}
-.t-body {
-  font-size: clamp(1rem, 1.15vw, 1.08rem);
-  line-height: 1.68;
-}
-.t-caption {
-  font-size: 0.78rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: #93897c;
+  font-size: calc(clamp(2.4rem, 5vw, 3.75rem) * var(--lang-scale) * var(--display-scale, 1));
+  line-height: calc(1.04 + var(--lang-leading));
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
-/* Цена всегда слева направо, даже внутри иврита */
+.t-lead {
+  font-family: var(--font-display);
+  font-size: calc(clamp(1.25rem, 2.2vw, 1.625rem) * var(--lang-scale));
+  line-height: calc(1.35 + var(--lang-leading));
+  font-weight: 400;
+  font-style: italic;
+}
+
+.t-body {
+  font-size: calc(clamp(1.0625rem, 1.1vw, 1.1875rem) * var(--lang-scale));
+  line-height: calc(1.65 + var(--lang-leading));
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+
+/* Метка — единственный уровень, который остаётся латиницей во всех локалях:
+   так он читается как маркировка оборудования, а не как непереведённый текст.
+   Поэтому же uppercase здесь безопасен — на иврите регистра нет. */
+.t-caption {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Активное — 700, промежуточных весов в системе нет: у Miriam Libre есть
+   только 400 и 700, и синтетический жир в фолбэке нам не нужен. */
+.t-strong {
+  font-weight: 700;
+}
+
+/* ── Числа ──────────────────────────────────────────────────────────────── */
+
 .price {
+  font-family: var(--font-mono);
   direction: ltr;
   unicode-bidi: isolate;
   font-variant-numeric: tabular-nums;
+  min-width: 5ch;
+  text-align: end;
 }
 
-/* Появление секций: без библиотек, с failsafe — контент не может залипнуть скрытым */
+/* Число внутри корпусной строки («на 2 ₪ меньше») — там моно не поставить,
+   поэтому табличность включается фичей. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Текст поверх живого кадра ──────────────────────────────────────────
+   Первый инструмент — грейд в пререндере (render/grade_pockets.py), он
+   ничего не стоит рантайму. Здесь только то, что грейд не закрывает.
+
+   Трёхслойная тень убрана намеренно: она читается как наклейка. Осталась
+   волосяная контактная — она отделяет букву от текстуры камня, не рисуя
+   вокруг неё формы. */
+.on-scene {
+  text-shadow: 0 1px 0 rgba(8, 6, 5, 0.35);
+}
+
+.on-scene .t-body,
+.on-scene p {
+  color: var(--fg-dim);
+}
+
+/*
+ * Скрим — страховка для блоков, где грейда не хватило: свет там лежит на самой
+ * чашке, а гасить героя ради строки нельзя. Привязан к краю, у которого стоит
+ * текст, и не мутит кадр целиком.
+ *
+ * backdrop-filter здесь запрещён: он ломает композитинг канваса на iOS — это
+ * уже наши грабли, не теория.
+ */
+.scrim-bottom::before,
+.scrim-top::before {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  height: 46svh;
+  pointer-events: none;
+  z-index: -1;
+}
+.scrim-bottom::before {
+  bottom: 0;
+  background: linear-gradient(to top, rgba(6, 5, 4, 0.72), transparent 58%);
+}
+.scrim-top::before {
+  top: 0;
+  background: linear-gradient(to bottom, rgba(6, 5, 4, 0.72), transparent 58%);
+}
+
+/* Подложка под конкретную строку, а не под блок. Только там, где важно
+   прочтение с одного взгляда: цена, часы, адрес. */
+.plate {
+  background: rgba(10, 9, 8, 0.62);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0.15em 0.4em;
+}
+
+/* ── Состояния ──────────────────────────────────────────────────────────
+   Радиус 0 везде: камень и бетон, не скругления. Анимируются только цвет,
+   прозрачность и трансформация. */
+
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 3px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 1.4rem;
+  border-radius: 0;
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: calc(1rem * var(--lang-scale));
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background-color var(--t-1) var(--e-inout), border-color var(--t-1) var(--e-inout),
+    color var(--t-1) var(--e-inout);
+}
+
+/* Текст на медной заливке только тёмный: светлый даёт 2.90:1 и запрещён. */
+.btn-primary {
+  background: var(--accent);
+  color: var(--ink);
+  border: 1px solid var(--accent);
+}
+.btn-primary:hover {
+  background: var(--accent-hi);
+  border-color: var(--accent-hi);
+}
+.btn-primary:active {
+  background: var(--accent-lo);
+  border-color: var(--accent-lo);
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--line-ui);
+}
+.btn-secondary:hover {
+  border-color: var(--fg);
+}
+.btn-secondary:active {
+  background: rgba(236, 230, 220, 0.08);
+}
+
+.btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Чип формы: выбор гостей, времени. Выбранное состояние — не акцентом:
+   бюджет акцента на странице занят, и выбор в форме его не заслуживает. */
+.chip {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 0.9rem;
+  background: var(--soot);
+  color: var(--fg-dim);
+  border: 1px solid var(--line-hair);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: border-color var(--t-1) var(--e-inout), color var(--t-1) var(--e-inout);
+}
+.chip:hover {
+  border-color: var(--line-ui);
+  color: var(--fg);
+}
+.chip[aria-pressed='true'],
+.chip[data-selected='true'] {
+  background: var(--fg);
+  color: var(--ink);
+  border-color: var(--fg);
+}
+
+.field {
+  min-height: 44px;
+  width: 100%;
+  padding: 0 0.9rem;
+  background: var(--soot);
+  color: var(--fg);
+  border: 1px solid var(--line-ui);
+  border-radius: 0;
+  /* 16px на телефоне — иначе iOS зумит страницу при фокусе в поле */
+  font-size: 16px;
+  font-family: var(--font-body);
+}
+.field::placeholder {
+  color: var(--muted);
+}
+
+.rule {
+  height: 1px;
+  background: var(--line-hair);
+}
+
+/* ── Строки, которые стелются ───────────────────────────────────────────
+   Механика и числа — docs/LINE-MOTION.md. Здесь то, без чего маска режет
+   буквы: SplitText обрезает по padding-box, а дисплейные уровни живут на
+   межстрочном меньше единицы, и верхушки букв уходили под край маски
+   постоянно, а не только во время анимации. */
+.line,
+.line-mask {
+  will-change: auto;
+}
+
+.line-mask {
+  padding-block: var(--mask-pad, 0.08em);
+  margin-block: calc(var(--mask-pad, 0.08em) * -1);
+}
+.t-display :is(.line-mask) {
+  --mask-pad: 0.22em;
+}
+.t-h2 :is(.line-mask) {
+  --mask-pad: 0.16em;
+}
+
+/* Safari до 16-й не знает overflow: clip и просто отбрасывает инлайн-стиль
+   от GSAP — маска перестаёт быть маской, и строки видны в скрытом положении. */
+@supports not (overflow: clip) {
+  .line-mask {
+    overflow: hidden !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .line,
+  .line-mask {
+    transform: none !important;
+    opacity: 1 !important;
+  }
+}
+
+/* ── Приход блоков ──────────────────────────────────────────────────────
+   Длительность приходит из скорости камеры (--reveal-dur), поэтому здесь
+   переменная, а не число. Значение по умолчанию — камера стоит. */
 .reveal {
   opacity: 0;
   transform: translateY(18px);
-  transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1), transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity var(--reveal-dur, var(--t-3)) var(--e-out),
+    transform var(--reveal-dur, var(--t-3)) var(--e-out);
 }
 .reveal.is-in {
   opacity: 1;
@@ -103,22 +367,16 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .reveal,
+  .btn,
+  .chip,
+  .field {
+    transition: none;
+  }
   .reveal {
     opacity: 1;
     transform: none;
-    transition: none;
   }
-}
-
-.rule {
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(236, 230, 220, 0.22), transparent);
-}
-
-/* Фокус виден всегда — outline не убираем, а заменяем своим */
-:where(a, button, input, select, [tabindex]):focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
 }
 
 input[type='range'] {

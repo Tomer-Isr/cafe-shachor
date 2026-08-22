@@ -68,6 +68,12 @@ in vec2 uv;
 out vec4 color;
 
 uniform sampler2D frame;
+// Следующий кадр плёнки и доля перехода к нему. Без этой пары кадр
+// переключался целым номером, и на прокрутке движение шло ступенями — при
+// 144 кадрах на несколько экранов ступень видна глазом как дёрганье.
+// Смешивание двух соседних кадров превращает лестницу в непрерывное движение.
+uniform sampler2D frameNext;
+uniform float frameMix;
 // Одна и та же карта заведена дважды: глубину надо читать сглаженно, иначе
 // ступени округления видны как полосы, а номер предмета — наоборот, точно,
 // иначе на границе чашки появляется предмет с номером «два с половиной».
@@ -84,6 +90,13 @@ uniform float hoverId;      // номер предмета под курсоро
 uniform float hoverAmt;     // сила наведения, нарастает и гаснет плавно
 uniform vec2 hit;           // x — номер предмета по нажатию, y — возраст удара в секундах
 uniform float time;
+
+/** Кадр плёнки в точке: два соседних снимка, смешанных по дробной части позиции. */
+vec3 sampleFilm(vec2 p) {
+  vec3 a = texture(frame, p).rgb;
+  if (frameMix <= 0.001) return a;
+  return mix(a, texture(frameNext, p).rgb, frameMix);
+}
 
 /**
  * Насколько далеко предметы расходятся за курсором: разница глубин × это.
@@ -231,7 +244,7 @@ void main() {
 
   t.y += same * 0.0016 + pulse * 0.0028;
 
-  vec3 rgb = texture(frame, hold(t)).rgb;
+  vec3 rgb = sampleFilm(hold(t));
 
   // На мониторе кадр всегда растягивается: плёнка в 1600 px против канвы в
   // 1920 и больше. Растяжение съедает определённость краёв, и сцена читается
@@ -244,10 +257,10 @@ void main() {
   float grow = smoothstep(1.05, 1.35, canvasSize.x / frameSize.x);
   if (grow > 0.001) {
     vec2 texel = 1.0 / frameSize;
-    vec3 around = (texture(frame, hold(t + vec2(texel.x, 0.0))).rgb
-                 + texture(frame, hold(t - vec2(texel.x, 0.0))).rgb
-                 + texture(frame, hold(t + vec2(0.0, texel.y))).rgb
-                 + texture(frame, hold(t - vec2(0.0, texel.y))).rgb) * 0.25;
+    vec3 around = (sampleFilm(hold(t + vec2(texel.x, 0.0)))
+                 + sampleFilm(hold(t - vec2(texel.x, 0.0)))
+                 + sampleFilm(hold(t + vec2(0.0, texel.y)))
+                 + sampleFilm(hold(t - vec2(0.0, texel.y)))) * 0.25;
     float lum = dot(rgb, vec3(0.299, 0.587, 0.114));
     rgb += (rgb - around) * 0.55 * grow * smoothstep(0.04, 0.26, lum);
   }
@@ -354,41 +367,53 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
         .then(keep)
         .catch(() => {})
 
-    const loadBatch = async (start: number) => {
-      if (cancelled || start >= count) return
+    // Порядок загрузки — от того места, где человек стоит, а не от начала
+    // плёнки. При обновлении страницы браузер возвращает прокрутку на середину,
+    // и последовательная загрузка с нуля означала, что нужный кадр приедет
+    // последним: до этого сцена показывала начало и потом рывком догоняла.
+    // Сначала вперёд по ходу чтения, следом назад — возврат вверх тоже бывает.
+    const startAt = Math.round((progressRef.current ?? 0) * (count - 1))
+    const order: number[] = []
+    for (let d = 0; d < count; d++) {
+      const ahead = startAt + d
+      const behind = startAt - d
+      if (ahead < count) order.push(ahead)
+      if (d > 0 && behind >= 0) order.push(behind)
+    }
+
+    const loadBatch = async (from: number) => {
+      if (cancelled || from >= order.length) return
       await Promise.all(
-        Array.from({ length: Math.min(BATCH, count - start) }, (_, k) => {
-          const i = start + k
-          return load(framePath(root, i), (img) => {
+        order.slice(from, from + BATCH).map((i) =>
+          load(framePath(root, i), (img) => {
             frames.current[i] = img
             loaded += 1
             if (!cancelled) setReady(loaded)
-          })
-        }),
+          }),
+        ),
       )
-      loadBatch(start + BATCH)
+      loadBatch(from + BATCH)
     }
     loadBatch(0)
 
     // Карты глубины идут следом за кадрами: они лёгкие, но картинка важнее.
-    const loadAux = async (start: number) => {
-      if (cancelled || start >= count) return
+    const loadAux = async (from: number) => {
+      if (cancelled || from >= order.length) return
       await Promise.all(
-        Array.from({ length: Math.min(BATCH, count - start) }, (_, k) => {
-          const i = start + k
-          return load(auxPath(auxRoot, i), (img) => {
+        order.slice(from, from + BATCH).map((i) =>
+          load(auxPath(auxRoot, i), (img) => {
             auxes.current[i] = img
-          })
-        }),
+          }),
+        ),
       )
-      loadAux(start + BATCH)
+      loadAux(from + BATCH)
     }
     setTimeout(() => loadAux(0), 400)
 
     return () => {
       cancelled = true
     }
-  }, [count, root, auxRoot])
+  }, [count, root, auxRoot, progressRef])
 
   // ── ввод ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -436,6 +461,19 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     }
   }, [still])
 
+  // Колбэк живёт в ref и не попадает в зависимости отрисовки.
+  //
+  // Иначе получалась цепочка, которая и делала плёнку дёрганой: `onFail`
+  // приходит новой стрелкой на каждый рендер, каждый загруженный кадр двигает
+  // счётчик `ready` → рендер → эффект пересобирается → cleanup гасит контекст
+  // (`loseContext`) → следующий `getContext` отдаёт уже мёртвый → компонент
+  // тихо падает на запасную плёнку, а она показывает целые кадры без
+  // смешивания. То есть весь WebGL-путь умирал молча на первых же секундах.
+  const onFailRef = useRef(onFail)
+  useEffect(() => {
+    onFailRef.current = onFail
+  }, [onFail])
+
   // ── отрисовка ───────────────────────────────────────────────────────────
   useEffect(() => {
     const el = canvas.current
@@ -443,7 +481,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     const gl = el.getContext('webgl2', { alpha: false, antialias: false, powerPreference: 'low-power' })
     if (!gl) {
       setFallback(true)
-      onFail?.()
+      onFailRef.current?.()
       return
     }
 
@@ -451,7 +489,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     const fs = compile(gl, gl.FRAGMENT_SHADER, FRAG)
     if (!vs || !fs) {
       setFallback(true)
-      onFail?.()
+      onFailRef.current?.()
       return
     }
     const prog = gl.createProgram()!
@@ -460,7 +498,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     gl.linkProgram(prog)
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
       setFallback(true)
-      onFail?.()
+      onFailRef.current?.()
       return
     }
     gl.useProgram(prog)
@@ -494,9 +532,11 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     const texFrame = makeTex(0, true)
     const texAuxSmooth = makeTex(1, true, true)
     const texAuxSharp = makeTex(2, false)
+    const texFrameNext = makeTex(3, true)
     gl.uniform1i(gl.getUniformLocation(prog, 'frame'), 0)
     gl.uniform1i(gl.getUniformLocation(prog, 'auxSmooth'), 1)
     gl.uniform1i(gl.getUniformLocation(prog, 'auxSharp'), 2)
+    gl.uniform1i(gl.getUniformLocation(prog, 'frameNext'), 3)
 
     const uCanvas = gl.getUniformLocation(prog, 'canvasSize')
     const uFrame = gl.getUniformLocation(prog, 'frameSize')
@@ -509,6 +549,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     const uHoverAmt = gl.getUniformLocation(prog, 'hoverAmt')
     const uHit = gl.getUniformLocation(prog, 'hit')
     const uTime = gl.getUniformLocation(prog, 'time')
+    const uFrameMix = gl.getUniformLocation(prog, 'frameMix')
 
     const resize = () => {
       const dpr = Math.min(DPR_CAP, window.devicePixelRatio || 1)
@@ -625,7 +666,9 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     }
 
     let raf = 0
+    let snap = true
     let uploadedFrame: ImageBitmap | null = null
+    let uploadedNext: ImageBitmap | null = null
     let uploadedAux: ImageBitmap | null = null
     const rippleData = new Float32Array(MAX_RIPPLES * 4)
     const startedAt = performance.now()
@@ -634,8 +677,19 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
       raf = requestAnimationFrame(tick)
 
       const target = (progressRef.current ?? 0) * (count - 1)
-      current.current += (target - current.current) * (paused ? 1 : SMOOTH)
-      const index = Math.round(current.current)
+      // Первый кадр после загрузки берётся как есть. Иначе при обновлении
+      // страницы браузер восстанавливает прокрутку, плёнка стартует с нуля и
+      // на глазах догоняет нужное место — это и читалось как «сам перематывает
+      // видео куда-то очень быстро».
+      if (snap) {
+        current.current = target
+        snap = false
+      } else {
+        current.current += (target - current.current) * (paused ? 1 : SMOOTH)
+      }
+
+      const index = Math.floor(current.current)
+      const frac = current.current - index
       const img = nearest(frames.current, index)
       if (!img) return
 
@@ -646,6 +700,20 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
         uploadedFrame = img
         gl.uniform2f(uFrame, img.width, img.height)
       }
+
+      // Следующий кадр и доля перехода к нему. Соседний кадр берём только если
+      // он действительно загружен: подставлять вместо него дальний (как делает
+      // nearest) значило бы смешивать несмежные позиции камеры — получилось бы
+      // призрачное двоение вместо плавности.
+      const nextImg = frames.current[Math.min(index + 1, count - 1)] ?? null
+      const mix = nextImg && nextImg !== img ? frac : 0
+      if (nextImg && nextImg !== uploadedNext) {
+        gl.activeTexture(gl.TEXTURE3)
+        gl.bindTexture(gl.TEXTURE_2D, texFrameNext)
+        upload(texFrameNext, nextImg)
+        uploadedNext = nextImg
+      }
+      gl.uniform1f(uFrameMix, mix)
 
       const auxImg = nearest(auxes.current, index)
       if (auxImg && auxImg !== uploadedAux) {
@@ -731,11 +799,12 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
       window.removeEventListener('resize', resize)
       gl.deleteProgram(prog)
       gl.deleteTexture(texFrame)
+      gl.deleteTexture(texFrameNext)
       gl.deleteTexture(texAuxSmooth)
       gl.deleteTexture(texAuxSharp)
       gl.deleteBuffer(buf)
     }
-  }, [count, progressRef, paused, still, onFail])
+  }, [count, progressRef, paused, still])
 
   return (
     <>
