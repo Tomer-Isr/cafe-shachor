@@ -58,6 +58,9 @@ const PROBE_H = 90
 
 const framePath = (base: string, i: number) => `${base}frame-${String(i).padStart(3, '0')}.webp`
 const auxPath = (base: string, i: number) => `${base}aux-${String(i).padStart(3, '0')}.webp`
+const flowPath = (base: string, i: number) => `${base}flow-${String(i).padStart(3, '0')}.webp`
+/** масштаб кодирования карт движения — должен совпадать с render/pack_flow.py */
+const FLOW_RANGE = 96
 
 const VERT = `#version 300 es
 in vec2 pos;
@@ -80,6 +83,14 @@ uniform sampler2D frame;
 // Смешивание двух соседних кадров превращает лестницу в непрерывное движение.
 uniform sampler2D frameNext;
 uniform float frameMix;
+// Карта движения между текущим кадром и следующим: куда уехал каждый кусок
+// картинки. Нужна, потому что соседние кадры расходятся на 20-30 пикселей, а
+// простое перетекание читается движением только пока разрыв 2-3 px. На нашем
+// разрыве глаз видел не движение, а два наложенных изображения — надпись на
+// чашке двоилась при прокрутке.
+uniform sampler2D flowMap;
+uniform float flowRange;   // масштаб кодирования карты, в пикселях кадра
+uniform float hasFlow;
 // Одна и та же карта заведена дважды: глубину надо читать сглаженно, иначе
 // ступени округления видны как полосы, а номер предмета — наоборот, точно,
 // иначе на границе чашки появляется предмет с номером «два с половиной».
@@ -101,7 +112,36 @@ uniform float time;
 vec3 sampleFilm(vec2 p) {
   vec3 a = texture(frame, p).rgb;
   if (frameMix <= 0.001) return a;
-  return mix(a, texture(frameNext, p).rgb, frameMix);
+
+  if (hasFlow < 0.5) return mix(a, texture(frameNext, p).rgb, frameMix);
+
+  float t = frameMix;
+
+  // Смещение в этой точке. Карта хранит его вокруг середины диапазона:
+  // 128 — ноль, края — плюс-минус flowRange пикселей.
+  vec2 raw = (texture(flowMap, p).rg - 128.0 / 255.0) * (255.0 / 127.0);
+  vec2 f = raw * flowRange / frameSize;
+  // Кадры декодируются перевёрнутыми по вертикали, а поток считался по
+  // исходным: по Y знак противоположный.
+  f.y = -f.y;
+
+  // Насколько потоку можно верить. На быстрых участках камеры смещение
+  // доходит до сотни пикселей, там за краем движущегося предмета попросту
+  // нет данных — что бы мы ни сдвигали, получится каша. В таких местах
+  // честнее показать один кадр резким, чем два размазанными.
+  float px = length(f * frameSize);
+  float trust = 1.0 - smoothstep(55.0, 105.0, px);
+  if (trust < 0.02) return t < 0.5 ? a : texture(frameNext, p).rgb;
+
+  // Каждый кадр сдвигается навстречу другому на свою долю пути — и совпадают
+  // они уже в промежуточном положении, а не накладываются в исходных.
+  vec3 aw = texture(frame,     p - f * t).rgb;
+  vec3 bw = texture(frameNext, p + f * (1.0 - t)).rgb;
+  vec3 warped = mix(aw, bw, t);
+
+  // Плавный переход к обычному перетеканию там, где потоку веры мало.
+  vec3 plain = mix(a, texture(frameNext, p).rgb, t);
+  return mix(plain, warped, trust);
 }
 
 /**
@@ -344,6 +384,8 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
   // все 144 значило 1,9 ГБ на вкладку; теперь распакованы только соседние.
   const blobs = useRef<(Blob | null)[]>([])
   const auxBlobs = useRef<(Blob | null)[]>([])
+  const flows = useRef<(ImageBitmap | null)[]>([])
+  const flowBlobs = useRef<(Blob | null)[]>([])
   const decoding = useRef<Set<number>>(new Set())
   const current = useRef(0)
   const [ready, setReady] = useState(0)
@@ -359,6 +401,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
 
   const root = base ?? `${import.meta.env.BASE_URL}film/`
   const auxRoot = auxBase ?? `${import.meta.env.BASE_URL}film-aux/`
+  const flowRoot = `${import.meta.env.BASE_URL}film-flow/`
 
   // ── распаковка по требованию ────────────────────────────────────────────
   // Blob'ы качаются все и сразу, а распаковываются только вокруг текущего
@@ -389,6 +432,21 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
       auxes.current[i] = await createImageBitmap(b, { imageOrientation: 'flipY' })
     } catch {
       /* без карты глубины сцена рисуется, просто без объёма */
+    } finally {
+      decoding.current.delete(key)
+    }
+  }, [])
+
+  const decodeFlow = useCallback(async (i: number) => {
+    const key = i + 200000
+    if (flows.current[i] || decoding.current.has(key)) return
+    const b = flowBlobs.current[i]
+    if (!b) return
+    decoding.current.add(key)
+    try {
+      flows.current[i] = await createImageBitmap(b, { imageOrientation: 'flipY' })
+    } catch {
+      /* без карты движения кадры просто перетекают, как раньше */
     } finally {
       decoding.current.delete(key)
     }
@@ -427,6 +485,11 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
             a.close()
             auxes.current[i] = null
           }
+          const fl = flows.current[i]
+          if (fl) {
+            fl.close()
+            flows.current[i] = null
+          }
         }
       }
 
@@ -446,8 +509,17 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
           auxBudget--
         }
       }
+      // Карты движения — 320 px, распаковка почти бесплатная.
+      let flowBudget = DECODES_PER_PASS * 2
+      for (const i of want) {
+        if (flowBudget <= 0) break
+        if (!flows.current[i] && !decoding.current.has(i + 200000)) {
+          void decodeFlow(i)
+          flowBudget--
+        }
+      }
     },
-    [decodeFrame, decodeAux],
+    [decodeFrame, decodeAux, decodeFlow],
   )
 
   // ── загрузка кадров и карт глубины пачками ──────────────────────────────
@@ -456,8 +528,10 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     // которые завёл этот прогон эффекта, а не то, что окажется в ref потом.
     const frameList: (ImageBitmap | null)[] = new Array(count).fill(null)
     const auxList: (ImageBitmap | null)[] = new Array(count).fill(null)
+    const flowList: (ImageBitmap | null)[] = new Array(count).fill(null)
     frames.current = frameList
     auxes.current = auxList
+    flows.current = flowList
     const decodingSet = decoding.current
     let cancelled = false
     let loaded = 0
@@ -517,19 +591,34 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     }
     setTimeout(() => loadAux(0), 400)
 
+    // Карты движения — данные того же порядка, что и глубина: 12 КБ на кадр.
+    const loadFlow = async (from: number) => {
+      if (cancelled || from >= order.length) return
+      await Promise.all(
+        order.slice(from, from + BATCH).map((i) =>
+          fetchBlob(flowPath(flowRoot, i), (b) => {
+            flowBlobs.current[i] = b
+          }),
+        ),
+      )
+      loadFlow(from + BATCH)
+    }
+    setTimeout(() => loadFlow(0), 600)
+
     return () => {
       cancelled = true
       // Отпускаем распакованные кадры: без close() они висят до сборки мусора,
       // а это сотни мегабайт.
-      for (const list of [frameList, auxList]) {
+      for (const list of [frameList, auxList, flowList]) {
         list.forEach((b) => b?.close?.())
         list.fill(null)
       }
       blobs.current = []
       auxBlobs.current = []
+      flowBlobs.current = []
       decodingSet.clear()
     }
-  }, [count, root, auxRoot, progressRef, decodeFrame])
+  }, [count, root, auxRoot, flowRoot, progressRef, decodeFrame])
 
   // ── ввод ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -649,18 +738,24 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     const texAuxSmooth = makeTex(1, true, true)
     const texAuxSharp = makeTex(2, false)
     const texFrameNext = makeTex(3, true)
+    // Карта движения читается сглаженно: она втрое мельче кадра, и по резкой
+    // на границах предметов появлялись бы ступени сдвига.
+    const texFlow = makeTex(4, true)
     const uFrameTex = gl.getUniformLocation(prog, 'frame')
     const uFrameNextTex = gl.getUniformLocation(prog, 'frameNext')
     gl.uniform1i(uFrameTex, 0)
     gl.uniform1i(gl.getUniformLocation(prog, 'auxSmooth'), 1)
     gl.uniform1i(gl.getUniformLocation(prog, 'auxSharp'), 2)
     gl.uniform1i(uFrameNextTex, 3)
+    gl.uniform1i(gl.getUniformLocation(prog, 'flowMap'), 4)
+    gl.uniform1f(gl.getUniformLocation(prog, 'flowRange'), FLOW_RANGE)
 
     const uCanvas = gl.getUniformLocation(prog, 'canvasSize')
     const uFrame = gl.getUniformLocation(prog, 'frameSize')
     const uCursor = gl.getUniformLocation(prog, 'cursorUV')
     const uLive = gl.getUniformLocation(prog, 'cursorLive')
     const uHasAux = gl.getUniformLocation(prog, 'hasAux')
+    const uHasFlow = gl.getUniformLocation(prog, 'hasFlow')
     const uRipples = gl.getUniformLocation(prog, 'ripples')
     const uCup = gl.getUniformLocation(prog, 'cup')
     const uHoverId = gl.getUniformLocation(prog, 'hoverId')
@@ -797,6 +892,7 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
     let unitCur = 0
     let unitNext = 3
     let uploadedAux: ImageBitmap | null = null
+    let uploadedFlow: ImageBitmap | null = null
     const rippleData = new Float32Array(MAX_RIPPLES * 4)
     const startedAt = performance.now()
 
@@ -877,6 +973,18 @@ export function FilmGL({ count, progressRef, base, auxBase, paused = false, stil
         uploadedNext = nextImg
       }
       gl.uniform1f(uFrameMix, mix)
+
+      // Карта движения нужна только когда кадры действительно смешиваются.
+      // Берём строго карту текущего кадра: она описывает переход именно
+      // к следующему, соседняя описывала бы другой переход.
+      const flowImg = mix > 0 ? (flows.current[index] ?? null) : null
+      if (flowImg && flowImg !== uploadedFlow) {
+        gl.activeTexture(gl.TEXTURE4)
+        gl.bindTexture(gl.TEXTURE_2D, texFlow)
+        upload(texFlow, flowImg)
+        uploadedFlow = flowImg
+      }
+      gl.uniform1f(uHasFlow, flowImg ? 1 : 0)
 
       const auxImg = nearest(auxes.current, index)
       if (auxImg && auxImg !== uploadedAux) {
