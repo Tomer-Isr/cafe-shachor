@@ -118,7 +118,12 @@ export function Film({ count, progressRef, base, paused = false }: Props) {
       const target = (progressRef.current ?? 0) * (count - 1)
       // Сглаживание по времени, а не по кадрам: иначе при просадке частоты
       // запаздывание растёт и рывок становится заметнее (то же, что в FilmGL).
-      const k = paused ? 1 : 1 - Math.pow(1 - SMOOTH, dt / 16.667)
+        // paused здесь означает «система просит меньше движения». Раньше в
+      // этом режиме коэффициент был единицей — то есть плёнка следовала за
+      // прокруткой МГНОВЕННО и повторяла каждую ступеньку колеса. Для того,
+      // кто просил меньше движения, это худший из возможных вариантов.
+      // Теперь наоборот: сглаживаем сильнее обычного.
+      const k = 1 - Math.pow(1 - (paused ? SMOOTH * 0.5 : SMOOTH), dt / 16.667)
       current.current += (target - current.current) * k
       const img = nearest(Math.round(current.current))
       if (img) drawCover(img)

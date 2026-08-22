@@ -7,6 +7,7 @@ import { FilmProgress } from './film/motion'
 import { Lines } from './ui/Lines'
 import { BeanBlock, Booking, Footer, Menu, Space, Visit } from './ui/Sections'
 import { useSmoothScroll } from './film/useSmoothScroll'
+import { Diagnostics } from './ui/Diagnostics'
 
 /**
  * Сцена — фон всей страницы, а не пролог с контентом под ним.
@@ -111,6 +112,11 @@ export default function App() {
   // прокрутку на прежнее место.
   // Плавная прокрутка: колесо на Windows идёт скачками, и без этого текст
   // двигался ступеньками, пока плёнка шла гладко.
+  // ?debug=1 — панель «что происходит на этой машине». Нужна, чтобы не гадать
+  // о поведении на чужом железе и системных настройках.
+  const debug =
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug')
+
   useSmoothScroll()
 
   const progressRef = useRef(initialProgress())
@@ -263,6 +269,7 @@ export default function App() {
           </div>
         </div>
       </div>
+        {debug && <Diagnostics />}
       </FilmProgress.Provider>
 
       <div className="fixed bottom-4 start-4 z-[3] flex gap-1 text-xs">
